@@ -1,0 +1,25 @@
+[package]
+name = "daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mcp-cli-daemon"
+path = "src/main.rs"
+
+[dependencies]
+protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+memmap2.workspace = true
+git2.workspace = true
+grep-searcher.workspace = true
+grep-regex.workspace = true
+ignore.workspace = true
