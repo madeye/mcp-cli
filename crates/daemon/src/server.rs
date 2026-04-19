@@ -8,14 +8,23 @@ use tokio::net::{UnixListener, UnixStream};
 use crate::changelog::ChangeLog;
 use crate::framing::{read_frame, write_frame};
 use crate::handlers;
+use crate::prewarm;
+use crate::search_cache::SearchCache;
 use crate::watcher::{self, WatchHandle};
 
 pub struct Daemon {
     pub root: PathBuf,
     pub changelog: Arc<ChangeLog>,
+    pub search_cache: Arc<SearchCache>,
 }
 
-pub async fn serve(socket: PathBuf, root: PathBuf, changelog_capacity: usize) -> Result<()> {
+pub async fn serve(
+    socket: PathBuf,
+    root: PathBuf,
+    changelog_capacity: usize,
+    search_cache_capacity: usize,
+    prewarm_enabled: bool,
+) -> Result<()> {
     if socket.exists() {
         std::fs::remove_file(&socket)
             .with_context(|| format!("removing stale socket {}", socket.display()))?;
@@ -24,8 +33,16 @@ pub async fn serve(socket: PathBuf, root: PathBuf, changelog_capacity: usize) ->
         UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
 
     let changelog = Arc::new(ChangeLog::with_capacity(changelog_capacity));
+    let search_cache = Arc::new(SearchCache::new(search_cache_capacity));
     let _watch: WatchHandle = watcher::spawn(root.clone(), changelog.clone())?;
-    let daemon = Arc::new(Daemon { root, changelog });
+    if prewarm_enabled {
+        prewarm::spawn(root.clone());
+    }
+    let daemon = Arc::new(Daemon {
+        root,
+        changelog,
+        search_cache,
+    });
 
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);

@@ -11,6 +11,7 @@ use protocol::{
     SearchGrepResult, SearchHit,
 };
 
+use crate::search_cache::SearchKey;
 use crate::server::{resolve_within, Daemon};
 
 const FS_READ_DEFAULT_LIMIT: u64 = 256 * 1024;
@@ -243,6 +244,21 @@ pub fn search_grep(
         None => daemon.root.clone(),
     };
 
+    // Snapshot the version first so the cache key is pinned to a point in
+    // time. Any file change landing after this will bump the version and
+    // invalidate the entry on next access.
+    let (version, _) = daemon.changelog.snapshot();
+    let cache_key = SearchKey {
+        pattern: params.pattern.clone(),
+        path: params.path.clone(),
+        glob: params.glob.clone(),
+        max_results: params.max_results,
+        case_insensitive: params.case_insensitive,
+    };
+    if let Some(cached) = daemon.search_cache.get(version, &cache_key) {
+        return Ok(serde_json::to_value(cached).unwrap());
+    }
+
     let matcher = RegexMatcherBuilder::new()
         .case_insensitive(params.case_insensitive)
         .build(&params.pattern)
@@ -313,5 +329,9 @@ pub fn search_grep(
         }
     }
 
-    Ok(serde_json::to_value(SearchGrepResult { hits, truncated }).unwrap())
+    let result = SearchGrepResult { hits, truncated };
+    daemon
+        .search_cache
+        .insert(version, cache_key, result.clone());
+    Ok(serde_json::to_value(result).unwrap())
 }
