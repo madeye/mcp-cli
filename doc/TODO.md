@@ -22,12 +22,12 @@ Concrete, actionable items. Group headers track milestones in
 
 ## Indexing (M2)
 
-- [ ] Pre-warm walker that respects gitignore and pages source files in.
+- [x] Pre-warm walker that respects gitignore and pages source files in.
 - [ ] `tree-sitter` integration crate; start with `rust`, `c`, `cpp`, `python`,
       `typescript`, `go`.
 - [ ] `code.outline` RPC: file -> top-level definitions (`fn`, `struct`,
       `class`, `def`, etc.) with byte ranges.
-- [ ] LRU for `search.grep` results keyed on `(pattern, glob, version)`.
+- [x] LRU for `search.grep` results keyed on `(pattern, glob, version)`.
 
 ## Language backends (M3)
 

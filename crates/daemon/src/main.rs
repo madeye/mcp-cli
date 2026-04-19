@@ -1,6 +1,8 @@
 mod changelog;
 mod framing;
 mod handlers;
+mod prewarm;
+mod search_cache;
 mod server;
 mod watcher;
 
@@ -25,6 +27,19 @@ struct Args {
     /// Larger values tolerate slower clients at the cost of memory.
     #[arg(long, default_value_t = 4096)]
     changelog_capacity: usize,
+
+    /// Capacity (in entries) of the `search.grep` LRU. The cache is flushed
+    /// whenever the ChangeLog version advances, so this just caps memory for
+    /// repeat queries within a single quiescent window. Set to 0 to disable.
+    #[arg(long, default_value_t = 64)]
+    search_cache_capacity: usize,
+
+    /// Skip the startup pre-warm walk that pages source files into the OS
+    /// cache. The walk runs once, in the background, and does not block
+    /// incoming requests; this flag exists for benchmarks and tests where
+    /// warm-cache behaviour should be controlled explicitly.
+    #[arg(long, default_value_t = false)]
+    no_prewarm: bool,
 }
 
 #[tokio::main]
@@ -51,7 +66,16 @@ async fn main() -> Result<()> {
         socket = %args.socket.display(),
         root = %root.display(),
         changelog_capacity = args.changelog_capacity,
+        search_cache_capacity = args.search_cache_capacity,
+        prewarm = !args.no_prewarm,
         "starting daemon",
     );
-    server::serve(args.socket, root, args.changelog_capacity).await
+    server::serve(
+        args.socket,
+        root,
+        args.changelog_capacity,
+        args.search_cache_capacity,
+        !args.no_prewarm,
+    )
+    .await
 }
