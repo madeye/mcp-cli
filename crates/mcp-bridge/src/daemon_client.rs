@@ -17,12 +17,19 @@ pub struct DaemonClient {
 impl DaemonClient {
     pub async fn connect(socket: &Path) -> Result<Self> {
         let stream = UnixStream::connect(socket).await?;
-        Ok(Self { stream: Mutex::new(stream), next_id: AtomicU64::new(1) })
+        Ok(Self {
+            stream: Mutex::new(stream),
+            next_id: AtomicU64::new(1),
+        })
     }
 
     pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let req = Request { id, method: method.to_string(), params };
+        let req = Request {
+            id,
+            method: method.to_string(),
+            params,
+        };
         let payload = serde_json::to_vec(&req)?;
         let len = u32::try_from(payload.len()).map_err(|_| anyhow!("request too large"))?;
 

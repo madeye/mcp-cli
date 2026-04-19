@@ -37,7 +37,11 @@ pub async fn run(socket: PathBuf) -> Result<()> {
         };
 
         let id = req.get("id").cloned().unwrap_or(Value::Null);
-        let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("").to_string();
+        let method = req
+            .get("method")
+            .and_then(|m| m.as_str())
+            .unwrap_or("")
+            .to_string();
         let params = req.get("params").cloned().unwrap_or(Value::Null);
 
         // Notifications (no id): handle without responding.

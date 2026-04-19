@@ -8,7 +8,10 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
-#[command(name = "mcp-cli-bridge", about = "MCP stdio bridge that fronts the sidecar daemon")]
+#[command(
+    name = "mcp-cli-bridge",
+    about = "MCP stdio bridge that fronts the sidecar daemon"
+)]
 struct Args {
     /// UDS path of the running daemon.
     #[arg(long, default_value = "/tmp/mcp-cli.sock")]
@@ -18,7 +21,9 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+        )
         .with_writer(std::io::stderr)
         .init();
 

@@ -6,9 +6,8 @@ use grep_searcher::SearcherBuilder;
 use ignore::WalkBuilder;
 use memmap2::Mmap;
 use protocol::{
-    FsChangesParams, FsChangesResult, FsReadParams, FsReadResult, FsSnapshotResult,
-    GitStatusEntry, GitStatusParams, GitStatusResult, RpcError, SearchGrepParams,
-    SearchGrepResult, SearchHit,
+    FsChangesParams, FsChangesResult, FsReadParams, FsReadResult, FsSnapshotResult, GitStatusEntry,
+    GitStatusParams, GitStatusResult, RpcError, SearchGrepParams, SearchGrepResult, SearchHit,
 };
 
 use crate::server::{resolve_within, Daemon};
@@ -40,11 +39,15 @@ pub fn fs_read(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json:
 
     // Safe: we only read the mapping; another process modifying the file mid-read
     // would risk SIGBUS, but for source-tree workloads this is the standard tradeoff.
-    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| RpcError::new(-32012, format!("mmap: {e}")))?;
+    let mmap =
+        unsafe { Mmap::map(&file) }.map_err(|e| RpcError::new(-32012, format!("mmap: {e}")))?;
 
     let offset = params.offset.min(total_size);
     let remaining = total_size - offset;
-    let limit = params.length.unwrap_or(FS_READ_DEFAULT_LIMIT).min(remaining);
+    let limit = params
+        .length
+        .unwrap_or(FS_READ_DEFAULT_LIMIT)
+        .min(remaining);
     let end = offset + limit;
     let slice = &mmap[offset as usize..end as usize];
 
@@ -60,7 +63,10 @@ pub fn fs_read(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json:
     .unwrap())
 }
 
-pub fn fs_snapshot(daemon: &Daemon, _params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
+pub fn fs_snapshot(
+    daemon: &Daemon,
+    _params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
     let (version, oldest_retained) = daemon.changelog.snapshot();
     Ok(serde_json::to_value(FsSnapshotResult {
         version,
@@ -70,14 +76,25 @@ pub fn fs_snapshot(daemon: &Daemon, _params: serde_json::Value) -> Result<serde_
     .unwrap())
 }
 
-pub fn fs_changes(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
+pub fn fs_changes(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
     let params: FsChangesParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let (version, changes, overflowed) = daemon.changelog.changes_since(params.since);
-    Ok(serde_json::to_value(FsChangesResult { version, changes, overflowed }).unwrap())
+    Ok(serde_json::to_value(FsChangesResult {
+        version,
+        changes,
+        overflowed,
+    })
+    .unwrap())
 }
 
-pub fn git_status(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
+pub fn git_status(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
     let params: GitStatusParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let repo_root = match params.repo {
@@ -92,7 +109,9 @@ pub fn git_status(daemon: &Daemon, params: serde_json::Value) -> Result<serde_js
     let branch = head
         .as_ref()
         .and_then(|h| h.shorthand().map(|s| s.to_string()));
-    let head_oid = head.as_ref().and_then(|h| h.target().map(|o| o.to_string()));
+    let head_oid = head
+        .as_ref()
+        .and_then(|h| h.target().map(|o| o.to_string()));
 
     let mut opts = git2::StatusOptions::new();
     opts.include_untracked(true).recurse_untracked_dirs(true);
@@ -104,31 +123,70 @@ pub fn git_status(daemon: &Daemon, params: serde_json::Value) -> Result<serde_js
         .iter()
         .filter_map(|s| {
             let path = s.path()?.to_string();
-            Some(GitStatusEntry { path, status: format_status(s.status()) })
+            Some(GitStatusEntry {
+                path,
+                status: format_status(s.status()),
+            })
         })
         .collect();
 
-    Ok(serde_json::to_value(GitStatusResult { branch, head: head_oid, entries }).unwrap())
+    Ok(serde_json::to_value(GitStatusResult {
+        branch,
+        head: head_oid,
+        entries,
+    })
+    .unwrap())
 }
 
 fn format_status(status: git2::Status) -> String {
     let mut parts = Vec::new();
-    if status.contains(git2::Status::INDEX_NEW) { parts.push("index_new"); }
-    if status.contains(git2::Status::INDEX_MODIFIED) { parts.push("index_modified"); }
-    if status.contains(git2::Status::INDEX_DELETED) { parts.push("index_deleted"); }
-    if status.contains(git2::Status::INDEX_RENAMED) { parts.push("index_renamed"); }
-    if status.contains(git2::Status::INDEX_TYPECHANGE) { parts.push("index_typechange"); }
-    if status.contains(git2::Status::WT_NEW) { parts.push("wt_new"); }
-    if status.contains(git2::Status::WT_MODIFIED) { parts.push("wt_modified"); }
-    if status.contains(git2::Status::WT_DELETED) { parts.push("wt_deleted"); }
-    if status.contains(git2::Status::WT_RENAMED) { parts.push("wt_renamed"); }
-    if status.contains(git2::Status::WT_TYPECHANGE) { parts.push("wt_typechange"); }
-    if status.contains(git2::Status::IGNORED) { parts.push("ignored"); }
-    if status.contains(git2::Status::CONFLICTED) { parts.push("conflicted"); }
-    if parts.is_empty() { "clean".to_string() } else { parts.join(",") }
+    if status.contains(git2::Status::INDEX_NEW) {
+        parts.push("index_new");
+    }
+    if status.contains(git2::Status::INDEX_MODIFIED) {
+        parts.push("index_modified");
+    }
+    if status.contains(git2::Status::INDEX_DELETED) {
+        parts.push("index_deleted");
+    }
+    if status.contains(git2::Status::INDEX_RENAMED) {
+        parts.push("index_renamed");
+    }
+    if status.contains(git2::Status::INDEX_TYPECHANGE) {
+        parts.push("index_typechange");
+    }
+    if status.contains(git2::Status::WT_NEW) {
+        parts.push("wt_new");
+    }
+    if status.contains(git2::Status::WT_MODIFIED) {
+        parts.push("wt_modified");
+    }
+    if status.contains(git2::Status::WT_DELETED) {
+        parts.push("wt_deleted");
+    }
+    if status.contains(git2::Status::WT_RENAMED) {
+        parts.push("wt_renamed");
+    }
+    if status.contains(git2::Status::WT_TYPECHANGE) {
+        parts.push("wt_typechange");
+    }
+    if status.contains(git2::Status::IGNORED) {
+        parts.push("ignored");
+    }
+    if status.contains(git2::Status::CONFLICTED) {
+        parts.push("conflicted");
+    }
+    if parts.is_empty() {
+        "clean".to_string()
+    } else {
+        parts.join(",")
+    }
 }
 
-pub fn search_grep(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
+pub fn search_grep(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
     let params: SearchGrepParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
 
@@ -150,14 +208,23 @@ pub fn search_grep(daemon: &Daemon, params: serde_json::Value) -> Result<serde_j
     walker.standard_filters(true).hidden(false);
     if let Some(glob) = &params.glob {
         let mut overrides = ignore::overrides::OverrideBuilder::new(&search_root);
-        overrides.add(glob).map_err(|e| RpcError::new(-32031, format!("glob: {e}")))?;
-        let built = overrides.build().map_err(|e| RpcError::new(-32032, format!("glob build: {e}")))?;
+        overrides
+            .add(glob)
+            .map_err(|e| RpcError::new(-32031, format!("glob: {e}")))?;
+        let built = overrides
+            .build()
+            .map_err(|e| RpcError::new(-32032, format!("glob build: {e}")))?;
         walker.overrides(built);
     }
 
     'outer: for entry in walker.build() {
-        let entry = match entry { Ok(e) => e, Err(_) => continue };
-        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) { continue; }
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
         let path = entry.path().to_path_buf();
         let rel_path = path
             .strip_prefix(&daemon.root)
@@ -175,9 +242,17 @@ pub fn search_grep(daemon: &Daemon, params: serde_json::Value) -> Result<serde_j
                     return Ok(false);
                 }
                 let mut line_text = line.to_string();
-                if line_text.ends_with('\n') { line_text.pop(); }
-                if line_text.ends_with('\r') { line_text.pop(); }
-                hits.push(SearchHit { path: local_path.clone(), line_number: lnum, line: line_text });
+                if line_text.ends_with('\n') {
+                    line_text.pop();
+                }
+                if line_text.ends_with('\r') {
+                    line_text.pop();
+                }
+                hits.push(SearchHit {
+                    path: local_path.clone(),
+                    line_number: lnum,
+                    line: line_text,
+                });
                 Ok(true)
             }),
         );

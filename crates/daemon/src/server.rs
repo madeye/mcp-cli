@@ -17,9 +17,11 @@ pub struct Daemon {
 
 pub async fn serve(socket: PathBuf, root: PathBuf) -> Result<()> {
     if socket.exists() {
-        std::fs::remove_file(&socket).with_context(|| format!("removing stale socket {}", socket.display()))?;
+        std::fs::remove_file(&socket)
+            .with_context(|| format!("removing stale socket {}", socket.display()))?;
     }
-    let listener = UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
+    let listener =
+        UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
 
     let changelog = Arc::new(ChangeLog::new());
     let _watch: WatchHandle = watcher::spawn(root.clone(), changelog.clone())?;
@@ -57,7 +59,11 @@ async fn handle_conn(mut stream: UnixStream, daemon: Arc<Daemon>) -> Result<()> 
         let req: Request = match serde_json::from_slice(&frame) {
             Ok(r) => r,
             Err(e) => {
-                let resp = Response { id: 0, result: None, error: Some(RpcError::new(-32700, e.to_string())) };
+                let resp = Response {
+                    id: 0,
+                    result: None,
+                    error: Some(RpcError::new(-32700, e.to_string())),
+                };
                 let payload = serde_json::to_vec(&resp)?;
                 write_frame(&mut write_half, &payload).await?;
                 continue;
@@ -74,7 +80,9 @@ async fn handle_conn(mut stream: UnixStream, daemon: Arc<Daemon>) -> Result<()> 
 async fn dispatch(daemon: &Daemon, req: Request) -> Response {
     let id = req.id;
     let result = match req.method.as_str() {
-        protocol::methods::PING => Ok(serde_json::json!({"ok": true, "version": protocol::PROTOCOL_VERSION})),
+        protocol::methods::PING => {
+            Ok(serde_json::json!({"ok": true, "version": protocol::PROTOCOL_VERSION}))
+        }
         protocol::methods::FS_READ => handlers::fs_read(daemon, req.params),
         protocol::methods::FS_SNAPSHOT => handlers::fs_snapshot(daemon, req.params),
         protocol::methods::FS_CHANGES => handlers::fs_changes(daemon, req.params),
@@ -83,17 +91,34 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
         other => Err(RpcError::new(-32601, format!("unknown method: {other}"))),
     };
     match result {
-        Ok(value) => Response { id, result: Some(value), error: None },
-        Err(err) => Response { id, result: None, error: Some(err) },
+        Ok(value) => Response {
+            id,
+            result: Some(value),
+            error: None,
+        },
+        Err(err) => Response {
+            id,
+            result: None,
+            error: Some(err),
+        },
     }
 }
 
-pub fn resolve_within<'a>(root: &Path, candidate: &'a str) -> std::result::Result<PathBuf, RpcError> {
+pub fn resolve_within(root: &Path, candidate: &str) -> std::result::Result<PathBuf, RpcError> {
     let path = Path::new(candidate);
-    let joined = if path.is_absolute() { path.to_path_buf() } else { root.join(path) };
-    let canon = joined.canonicalize().map_err(|e| RpcError::new(-32001, format!("canonicalize {candidate}: {e}")))?;
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let canon = joined
+        .canonicalize()
+        .map_err(|e| RpcError::new(-32001, format!("canonicalize {candidate}: {e}")))?;
     if !canon.starts_with(root) {
-        return Err(RpcError::new(-32002, format!("path escapes root: {}", canon.display())));
+        return Err(RpcError::new(
+            -32002,
+            format!("path escapes root: {}", canon.display()),
+        ));
     }
     Ok(canon)
 }

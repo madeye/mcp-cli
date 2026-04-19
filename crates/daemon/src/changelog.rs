@@ -50,7 +50,11 @@ impl ChangeLog {
                 g.overflow_high_water = evicted.version;
             }
         }
-        g.entries.push_back(ChangeEntry { path, kind, version });
+        g.entries.push_back(ChangeEntry {
+            path,
+            kind,
+            version,
+        });
     }
 
     pub fn snapshot(&self) -> (u64, u64) {

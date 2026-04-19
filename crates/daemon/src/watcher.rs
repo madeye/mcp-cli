@@ -18,7 +18,10 @@ pub struct WatchHandle {
 
 pub fn spawn(root: PathBuf, log: Arc<ChangeLog>) -> Result<WatchHandle> {
     let (gitignore, _err) = Gitignore::new(root.join(".gitignore"));
-    let filter = Filter { root: root.clone(), gitignore };
+    let filter = Filter {
+        root: root.clone(),
+        gitignore,
+    };
 
     let mut watcher = RecommendedWatcher::new(
         move |res: notify::Result<Event>| match res {
@@ -53,7 +56,12 @@ impl Filter {
             return false;
         };
         // Always drop anything inside the .git dir.
-        if rel.components().next().map(|c| c.as_os_str() == ".git").unwrap_or(false) {
+        if rel
+            .components()
+            .next()
+            .map(|c| c.as_os_str() == ".git")
+            .unwrap_or(false)
+        {
             return false;
         }
         let m = self.gitignore.matched_path_or_any_parents(rel, false);
@@ -63,30 +71,72 @@ impl Filter {
 
 fn handle_event(event: Event, filter: &Filter, log: &ChangeLog) {
     let kinds: Vec<(usize, ChangeKind)> = match event.kind {
-        EventKind::Create(_) => event.paths.iter().enumerate().map(|(i, _)| (i, ChangeKind::Created)).collect(),
-        EventKind::Remove(_) => event.paths.iter().enumerate().map(|(i, _)| (i, ChangeKind::Removed)).collect(),
+        EventKind::Create(_) => event
+            .paths
+            .iter()
+            .enumerate()
+            .map(|(i, _)| (i, ChangeKind::Created))
+            .collect(),
+        EventKind::Remove(_) => event
+            .paths
+            .iter()
+            .enumerate()
+            .map(|(i, _)| (i, ChangeKind::Removed))
+            .collect(),
         EventKind::Modify(ModifyKind::Name(mode)) => match mode {
-            RenameMode::From => event.paths.iter().enumerate().map(|(i, _)| (i, ChangeKind::Removed)).collect(),
-            RenameMode::To => event.paths.iter().enumerate().map(|(i, _)| (i, ChangeKind::Created)).collect(),
+            RenameMode::From => event
+                .paths
+                .iter()
+                .enumerate()
+                .map(|(i, _)| (i, ChangeKind::Removed))
+                .collect(),
+            RenameMode::To => event
+                .paths
+                .iter()
+                .enumerate()
+                .map(|(i, _)| (i, ChangeKind::Created))
+                .collect(),
             RenameMode::Both => {
                 // paths = [from, to]
                 let mut v = Vec::new();
-                if event.paths.len() >= 1 { v.push((0, ChangeKind::Removed)); }
-                if event.paths.len() >= 2 { v.push((1, ChangeKind::Created)); }
+                if !event.paths.is_empty() {
+                    v.push((0, ChangeKind::Removed));
+                }
+                if event.paths.len() >= 2 {
+                    v.push((1, ChangeKind::Created));
+                }
                 v
             }
-            _ => event.paths.iter().enumerate().map(|(i, _)| (i, ChangeKind::Modified)).collect(),
+            _ => event
+                .paths
+                .iter()
+                .enumerate()
+                .map(|(i, _)| (i, ChangeKind::Modified))
+                .collect(),
         },
-        EventKind::Modify(_) => event.paths.iter().enumerate().map(|(i, _)| (i, ChangeKind::Modified)).collect(),
+        EventKind::Modify(_) => event
+            .paths
+            .iter()
+            .enumerate()
+            .map(|(i, _)| (i, ChangeKind::Modified))
+            .collect(),
         // Access events and Other/Any are not interesting for change tracking.
         _ => return,
     };
 
     for (idx, kind) in kinds {
-        let Some(path) = event.paths.get(idx) else { continue };
-        if !filter.keep(path) { continue; }
-        let Some(rel) = filter.relative(path) else { continue };
-        if rel.is_empty() { continue; }
+        let Some(path) = event.paths.get(idx) else {
+            continue;
+        };
+        if !filter.keep(path) {
+            continue;
+        }
+        let Some(rel) = filter.relative(path) else {
+            continue;
+        };
+        if rel.is_empty() {
+            continue;
+        }
         log.record(rel, kind);
     }
 }
