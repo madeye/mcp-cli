@@ -1,6 +1,8 @@
+mod changelog;
 mod framing;
 mod handlers;
 mod server;
+mod watcher;
 
 use std::path::PathBuf;
 
