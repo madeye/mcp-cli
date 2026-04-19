@@ -5,11 +5,14 @@ use anyhow::{Context, Result};
 use protocol::{Request, Response, RpcError};
 use tokio::net::{UnixListener, UnixStream};
 
+use crate::changelog::ChangeLog;
 use crate::framing::{read_frame, write_frame};
 use crate::handlers;
+use crate::watcher::{self, WatchHandle};
 
 pub struct Daemon {
     pub root: PathBuf,
+    pub changelog: Arc<ChangeLog>,
 }
 
 pub async fn serve(socket: PathBuf, root: PathBuf) -> Result<()> {
@@ -17,7 +20,10 @@ pub async fn serve(socket: PathBuf, root: PathBuf) -> Result<()> {
         std::fs::remove_file(&socket).with_context(|| format!("removing stale socket {}", socket.display()))?;
     }
     let listener = UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
-    let daemon = Arc::new(Daemon { root });
+
+    let changelog = Arc::new(ChangeLog::new());
+    let _watch: WatchHandle = watcher::spawn(root.clone(), changelog.clone())?;
+    let daemon = Arc::new(Daemon { root, changelog });
 
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
@@ -70,6 +76,8 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
     let result = match req.method.as_str() {
         protocol::methods::PING => Ok(serde_json::json!({"ok": true, "version": protocol::PROTOCOL_VERSION})),
         protocol::methods::FS_READ => handlers::fs_read(daemon, req.params),
+        protocol::methods::FS_SNAPSHOT => handlers::fs_snapshot(daemon, req.params),
+        protocol::methods::FS_CHANGES => handlers::fs_changes(daemon, req.params),
         protocol::methods::GIT_STATUS => handlers::git_status(daemon, req.params),
         protocol::methods::SEARCH_GREP => handlers::search_grep(daemon, req.params),
         other => Err(RpcError::new(-32601, format!("unknown method: {other}"))),

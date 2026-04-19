@@ -89,6 +89,8 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
 
     let daemon_method = match name {
         "fs_read" => protocol::methods::FS_READ,
+        "fs_snapshot" => protocol::methods::FS_SNAPSHOT,
+        "fs_changes" => protocol::methods::FS_CHANGES,
         "git_status" => protocol::methods::GIT_STATUS,
         "search_grep" => protocol::methods::SEARCH_GREP,
         other => return Err(anyhow::anyhow!("unknown tool: {other}")),
@@ -115,6 +117,22 @@ fn tool_definitions() -> Value {
                     "length": {"type": "integer", "minimum": 1, "description": "Bytes to read; default 256 KiB."}
                 },
                 "required": ["path"]
+            }
+        },
+        {
+            "name": "fs_snapshot",
+            "description": "Return the current monotonic version cursor for the watched tree. Pair with fs_changes to do incremental syncs.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "fs_changes",
+            "description": "Return file changes (created/modified/removed, coalesced per path) since the given version. If `overflowed` is true, the client must do a full re-scan.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "since": {"type": "integer", "minimum": 0}
+                },
+                "required": ["since"]
             }
         },
         {

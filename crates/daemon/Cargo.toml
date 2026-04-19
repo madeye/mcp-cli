@@ -23,3 +23,5 @@ git2.workspace = true
 grep-searcher.workspace = true
 grep-regex.workspace = true
 ignore.workspace = true
+notify.workspace = true
+parking_lot.workspace = true

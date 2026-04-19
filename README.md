@@ -30,6 +30,12 @@ shell-tool wrappers.
 * **`crates/daemon`** - long-lived `mcp-cli-daemon` process that owns the
   project. Listens on a Unix Domain Socket and exposes in-process tools:
   * `fs.read` - mmap-backed file read (no `read(2)` per call).
+  * `fs.snapshot` / `fs.changes` - incremental sync. The daemon runs an
+    inotify (Linux) / FSEvent (macOS) watcher with a gitignore-aware filter,
+    maintains a monotonic version cursor, and returns coalesced
+    created/modified/removed events since a client-supplied version. If the
+    client falls too far behind, the response sets `overflowed: true` so the
+    client can re-scan instead of silently missing events.
   * `git.status` - libgit2 status (no `git` fork/exec).
   * `search.grep` - ripgrep's `grep-searcher` library over the project tree.
 * **`crates/mcp-bridge`** - small `mcp-cli-bridge` stdio binary that the agent
@@ -88,6 +94,6 @@ Register the bridge as an MCP server in your agent. Example for Claude Code's
 
 ## Status
 
-Skeleton. Working primitives: `fs_read`, `git_status`, `search_grep`. Planned:
-inotify-based incremental snapshots, tree-sitter indexing, pluggable
+Skeleton. Working primitives: `fs_read`, `fs_snapshot`, `fs_changes`,
+`git_status`, `search_grep`. Planned: tree-sitter indexing, pluggable
 language backends, `io_uring` I/O path on Linux.

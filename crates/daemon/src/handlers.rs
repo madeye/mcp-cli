@@ -6,8 +6,9 @@ use grep_searcher::SearcherBuilder;
 use ignore::WalkBuilder;
 use memmap2::Mmap;
 use protocol::{
-    FsReadParams, FsReadResult, GitStatusEntry, GitStatusParams, GitStatusResult, RpcError,
-    SearchGrepParams, SearchGrepResult, SearchHit,
+    FsChangesParams, FsChangesResult, FsReadParams, FsReadResult, FsSnapshotResult,
+    GitStatusEntry, GitStatusParams, GitStatusResult, RpcError, SearchGrepParams,
+    SearchGrepResult, SearchHit,
 };
 
 use crate::server::{resolve_within, Daemon};
@@ -57,6 +58,23 @@ pub fn fs_read(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json:
         truncated,
     })
     .unwrap())
+}
+
+pub fn fs_snapshot(daemon: &Daemon, _params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
+    let (version, oldest_retained) = daemon.changelog.snapshot();
+    Ok(serde_json::to_value(FsSnapshotResult {
+        version,
+        capacity: daemon.changelog.capacity(),
+        oldest_retained,
+    })
+    .unwrap())
+}
+
+pub fn fs_changes(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
+    let params: FsChangesParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let (version, changes, overflowed) = daemon.changelog.changes_since(params.since);
+    Ok(serde_json::to_value(FsChangesResult { version, changes, overflowed }).unwrap())
 }
 
 pub fn git_status(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {

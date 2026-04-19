@@ -34,6 +34,8 @@ impl RpcError {
 pub mod methods {
     pub const PING: &str = "ping";
     pub const FS_READ: &str = "fs.read";
+    pub const FS_SNAPSHOT: &str = "fs.snapshot";
+    pub const FS_CHANGES: &str = "fs.changes";
     pub const GIT_STATUS: &str = "git.status";
     pub const SEARCH_GREP: &str = "search.grep";
 }
@@ -99,4 +101,45 @@ pub struct SearchHit {
 pub struct SearchGrepResult {
     pub hits: Vec<SearchHit>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsSnapshotResult {
+    /// Current monotonic version cursor for the watched tree.
+    pub version: u64,
+    /// Capacity of the in-memory change ring; older changes are dropped.
+    pub capacity: usize,
+    /// Oldest version still queryable via `fs.changes`. Anything older
+    /// requires a full re-scan.
+    pub oldest_retained: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsChangesParams {
+    /// Return all events with version > `since`.
+    pub since: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    Created,
+    Modified,
+    Removed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeEntry {
+    pub path: String,
+    pub kind: ChangeKind,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsChangesResult {
+    pub version: u64,
+    pub changes: Vec<ChangeEntry>,
+    /// True if `since` was older than the oldest retained version, meaning
+    /// the client missed events and should do a fresh full scan.
+    pub overflowed: bool,
 }

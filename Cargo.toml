@@ -27,5 +27,7 @@ grep-searcher = "0.1"
 grep-regex = "0.1"
 ignore = "0.4"
 walkdir = "2"
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+parking_lot = "0.12"
 
 protocol = { path = "crates/protocol" }
