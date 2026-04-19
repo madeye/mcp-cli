@@ -20,6 +20,11 @@ struct Args {
     /// Project root the daemon serves (defaults to current dir).
     #[arg(long)]
     root: Option<PathBuf>,
+
+    /// Capacity (in events) of the in-memory ChangeLog ring buffer.
+    /// Larger values tolerate slower clients at the cost of memory.
+    #[arg(long, default_value_t = 4096)]
+    changelog_capacity: usize,
 }
 
 #[tokio::main]
@@ -38,6 +43,15 @@ async fn main() -> Result<()> {
     };
     let root = root.canonicalize()?;
 
-    tracing::info!(socket = %args.socket.display(), root = %root.display(), "starting daemon");
-    server::serve(args.socket, root).await
+    if args.changelog_capacity == 0 {
+        anyhow::bail!("--changelog-capacity must be > 0");
+    }
+
+    tracing::info!(
+        socket = %args.socket.display(),
+        root = %root.display(),
+        changelog_capacity = args.changelog_capacity,
+        "starting daemon",
+    );
+    server::serve(args.socket, root, args.changelog_capacity).await
 }

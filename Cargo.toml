@@ -29,5 +29,6 @@ ignore = "0.4"
 walkdir = "2"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 parking_lot = "0.12"
+tempfile = "3"
 
 protocol = { path = "crates/protocol" }

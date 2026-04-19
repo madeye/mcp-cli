@@ -26,3 +26,77 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, payload: &[u8]) 
     writer.flush().await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[tokio::test]
+    async fn roundtrip_single_frame() {
+        let mut buf: Vec<u8> = Vec::new();
+        write_frame(&mut buf, b"hello").await.unwrap();
+        let mut cursor = Cursor::new(buf);
+        let frame = read_frame(&mut cursor).await.unwrap();
+        assert_eq!(frame.as_deref(), Some(&b"hello"[..]));
+    }
+
+    #[tokio::test]
+    async fn roundtrip_many_frames() {
+        let mut buf: Vec<u8> = Vec::new();
+        for payload in [&b""[..], b"a", b"bb", b"ccc"] {
+            write_frame(&mut buf, payload).await.unwrap();
+        }
+        let mut cursor = Cursor::new(buf);
+        for expected in [&b""[..], b"a", b"bb", b"ccc"] {
+            let frame = read_frame(&mut cursor).await.unwrap();
+            assert_eq!(frame.as_deref(), Some(expected));
+        }
+        let frame = read_frame(&mut cursor).await.unwrap();
+        assert!(frame.is_none(), "clean EOF yields None");
+    }
+
+    #[tokio::test]
+    async fn max_frame_accepted() {
+        // Writing a frame exactly at MAX_FRAME should round-trip.
+        let payload = vec![0x61u8; MAX_FRAME as usize];
+        let mut buf: Vec<u8> = Vec::with_capacity(payload.len() + 4);
+        write_frame(&mut buf, &payload).await.unwrap();
+        let mut cursor = Cursor::new(buf);
+        let frame = read_frame(&mut cursor).await.unwrap();
+        assert_eq!(frame.unwrap().len(), MAX_FRAME as usize);
+    }
+
+    #[tokio::test]
+    async fn oversize_length_rejected() {
+        // Length prefix above MAX_FRAME is refused before reading the body.
+        let too_big = (MAX_FRAME + 1).to_be_bytes();
+        let mut cursor = Cursor::new(too_big.to_vec());
+        let err = read_frame(&mut cursor).await.expect_err("should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("frame too large"),
+            "unexpected error message: {msg}",
+        );
+    }
+
+    #[tokio::test]
+    async fn eof_mid_frame_is_error() {
+        // Advertise 10 bytes but only provide 3.
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(&10u32.to_be_bytes());
+        bytes.extend_from_slice(b"abc");
+        let mut cursor = Cursor::new(bytes);
+        let err = read_frame(&mut cursor).await.expect_err("should error");
+        // std::io::ErrorKind::UnexpectedEof surfaces as "early eof" in tokio.
+        let msg = err.to_string().to_lowercase();
+        assert!(msg.contains("eof") || msg.contains("unexpected"));
+    }
+
+    #[tokio::test]
+    async fn empty_stream_yields_none() {
+        let mut cursor = Cursor::new(Vec::<u8>::new());
+        let frame = read_frame(&mut cursor).await.unwrap();
+        assert!(frame.is_none());
+    }
+}

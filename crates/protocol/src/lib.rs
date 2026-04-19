@@ -39,6 +39,7 @@ pub mod methods {
     pub const FS_READ: &str = "fs.read";
     pub const FS_SNAPSHOT: &str = "fs.snapshot";
     pub const FS_CHANGES: &str = "fs.changes";
+    pub const FS_SCAN: &str = "fs.scan";
     pub const GIT_STATUS: &str = "git.status";
     pub const SEARCH_GREP: &str = "search.grep";
 }
@@ -145,4 +146,27 @@ pub struct FsChangesResult {
     /// True if `since` was older than the oldest retained version, meaning
     /// the client missed events and should do a fresh full scan.
     pub overflowed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FsScanParams {
+    /// Optional subdirectory (relative to the project root) to enumerate.
+    /// Defaults to the entire project tree.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Optional cap on number of entries returned. If the walker yields more
+    /// than this, `truncated` is set and the tail is dropped.
+    #[serde(default)]
+    pub max_results: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsScanResult {
+    /// Version captured at the start of the walk. After processing the result,
+    /// call `fs.changes(since: version)` to replay anything that landed while
+    /// the scan was running.
+    pub version: u64,
+    /// Paths relative to the project root. Honours gitignore; excludes `.git/`.
+    pub files: Vec<String>,
+    pub truncated: bool,
 }

@@ -6,8 +6,9 @@ use grep_searcher::SearcherBuilder;
 use ignore::WalkBuilder;
 use memmap2::Mmap;
 use protocol::{
-    FsChangesParams, FsChangesResult, FsReadParams, FsReadResult, FsSnapshotResult, GitStatusEntry,
-    GitStatusParams, GitStatusResult, RpcError, SearchGrepParams, SearchGrepResult, SearchHit,
+    FsChangesParams, FsChangesResult, FsReadParams, FsReadResult, FsScanParams, FsScanResult,
+    FsSnapshotResult, GitStatusEntry, GitStatusParams, GitStatusResult, RpcError, SearchGrepParams,
+    SearchGrepResult, SearchHit,
 };
 
 use crate::server::{resolve_within, Daemon};
@@ -87,6 +88,53 @@ pub fn fs_changes(
         version,
         changes,
         overflowed,
+    })
+    .unwrap())
+}
+
+pub fn fs_scan(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
+    let params: FsScanParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+
+    let scan_root = match &params.path {
+        Some(p) => resolve_within(&daemon.root, p)?,
+        None => daemon.root.clone(),
+    };
+
+    // Capture the cursor before we start walking. Any event landing during the
+    // walk will still be reachable via fs.changes(since: version), so the
+    // client can close the race with a single follow-up call.
+    let (version, _) = daemon.changelog.snapshot();
+
+    let max = params.max_results.unwrap_or(usize::MAX);
+    let mut files: Vec<String> = Vec::new();
+    let mut truncated = false;
+
+    for entry in WalkBuilder::new(&scan_root)
+        .standard_filters(true)
+        .hidden(false)
+        .build()
+    {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        if files.len() >= max {
+            truncated = true;
+            break;
+        }
+        let path = entry.path();
+        let rel = path.strip_prefix(&daemon.root).unwrap_or(path);
+        files.push(rel.to_string_lossy().to_string());
+    }
+
+    Ok(serde_json::to_value(FsScanResult {
+        version,
+        files,
+        truncated,
     })
     .unwrap())
 }

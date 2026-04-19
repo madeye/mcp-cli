@@ -95,6 +95,7 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
         "fs_read" => protocol::methods::FS_READ,
         "fs_snapshot" => protocol::methods::FS_SNAPSHOT,
         "fs_changes" => protocol::methods::FS_CHANGES,
+        "fs_scan" => protocol::methods::FS_SCAN,
         "git_status" => protocol::methods::GIT_STATUS,
         "search_grep" => protocol::methods::SEARCH_GREP,
         other => return Err(anyhow::anyhow!("unknown tool: {other}")),
@@ -137,6 +138,17 @@ fn tool_definitions() -> Value {
                     "since": {"type": "integer", "minimum": 0}
                 },
                 "required": ["since"]
+            }
+        },
+        {
+            "name": "fs_scan",
+            "description": "Enumerate all tracked files in the project (gitignore-aware, .git excluded). Returns the version cursor captured at the start of the walk, so a follow-up fs_changes(since: version) closes any race with events that landed during the scan. Use when fs_changes returned `overflowed: true`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Optional subdirectory relative to project root."},
+                    "max_results": {"type": "integer", "minimum": 1, "description": "Cap on returned entries."}
+                }
             }
         },
         {

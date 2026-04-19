@@ -15,7 +15,7 @@ pub struct Daemon {
     pub changelog: Arc<ChangeLog>,
 }
 
-pub async fn serve(socket: PathBuf, root: PathBuf) -> Result<()> {
+pub async fn serve(socket: PathBuf, root: PathBuf, changelog_capacity: usize) -> Result<()> {
     if socket.exists() {
         std::fs::remove_file(&socket)
             .with_context(|| format!("removing stale socket {}", socket.display()))?;
@@ -23,7 +23,7 @@ pub async fn serve(socket: PathBuf, root: PathBuf) -> Result<()> {
     let listener =
         UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
 
-    let changelog = Arc::new(ChangeLog::new());
+    let changelog = Arc::new(ChangeLog::with_capacity(changelog_capacity));
     let _watch: WatchHandle = watcher::spawn(root.clone(), changelog.clone())?;
     let daemon = Arc::new(Daemon { root, changelog });
 
@@ -86,6 +86,7 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
         protocol::methods::FS_READ => handlers::fs_read(daemon, req.params),
         protocol::methods::FS_SNAPSHOT => handlers::fs_snapshot(daemon, req.params),
         protocol::methods::FS_CHANGES => handlers::fs_changes(daemon, req.params),
+        protocol::methods::FS_SCAN => handlers::fs_scan(daemon, req.params),
         protocol::methods::GIT_STATUS => handlers::git_status(daemon, req.params),
         protocol::methods::SEARCH_GREP => handlers::search_grep(daemon, req.params),
         other => Err(RpcError::new(-32601, format!("unknown method: {other}"))),
@@ -121,4 +122,76 @@ pub fn resolve_within(root: &Path, candidate: &str) -> std::result::Result<PathB
         ));
     }
     Ok(canon)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn setup() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        (tmp, root)
+    }
+
+    #[test]
+    fn accepts_relative_file_inside_root() {
+        let (_tmp, root) = setup();
+        fs::write(root.join("a.txt"), b"hello").unwrap();
+        let resolved = resolve_within(&root, "a.txt").expect("inside root");
+        assert_eq!(resolved, root.join("a.txt"));
+    }
+
+    #[test]
+    fn accepts_absolute_path_inside_root() {
+        let (_tmp, root) = setup();
+        fs::write(root.join("a.txt"), b"hello").unwrap();
+        let abs = root.join("a.txt");
+        let resolved = resolve_within(&root, abs.to_str().unwrap()).expect("inside root");
+        assert_eq!(resolved, abs);
+    }
+
+    #[test]
+    fn rejects_parent_traversal() {
+        let (_tmp, root) = setup();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(root.parent().unwrap().join("outside.txt"), b"x").ok();
+
+        // Build a path that canonicalizes to a sibling of root.
+        let err = resolve_within(&sub, "../../outside.txt").expect_err("should be rejected");
+        assert_eq!(err.code, -32002);
+    }
+
+    #[test]
+    fn rejects_absolute_path_outside_root() {
+        let (_tmp, root) = setup();
+        // Point at a real path that is guaranteed to exist but is not under root.
+        let err = resolve_within(&root, "/tmp").expect_err("should be rejected");
+        // Either canonicalize succeeded (wrong-tree) or failed; both are errors.
+        assert!(err.code == -32001 || err.code == -32002);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_escaping_root() {
+        use std::os::unix::fs::symlink;
+        let (_tmp, root) = setup();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("secret.txt");
+        fs::write(&outside_file, b"nope").unwrap();
+        symlink(&outside_file, root.join("link")).unwrap();
+
+        let err =
+            resolve_within(&root, "link").expect_err("symlink escaping root must be rejected");
+        assert_eq!(err.code, -32002);
+    }
+
+    #[test]
+    fn nonexistent_path_is_error() {
+        let (_tmp, root) = setup();
+        let err = resolve_within(&root, "does-not-exist").expect_err("nonexistent");
+        assert_eq!(err.code, -32001);
+    }
 }

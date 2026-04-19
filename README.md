@@ -95,5 +95,5 @@ Register the bridge as an MCP server in your agent. Example for Claude Code's
 ## Status
 
 Skeleton. Working primitives: `fs_read`, `fs_snapshot`, `fs_changes`,
-`git_status`, `search_grep`. Planned: tree-sitter indexing, pluggable
-language backends, `io_uring` I/O path on Linux.
+`fs_scan`, `git_status`, `search_grep`. Planned: tree-sitter indexing,
+pluggable language backends, `io_uring` I/O path on Linux.

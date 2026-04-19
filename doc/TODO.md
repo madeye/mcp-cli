@@ -5,18 +5,19 @@ Concrete, actionable items. Group headers track milestones in
 
 ## Hardening (M0/M1 follow-ups)
 
-- [ ] Make `ChangeLog` capacity configurable via `--changelog-capacity`.
-- [ ] Suppress `created_then_removed` pairs (file briefly existed, gone before
+- [x] Make `ChangeLog` capacity configurable via `--changelog-capacity`.
+- [x] Suppress `created_then_removed` pairs (file briefly existed, gone before
       next snapshot) so they don't show up as `removed`.
-- [ ] Add `fs.scan` so a client that sees `overflowed: true` can do a fresh
+- [x] Add `fs.scan` so a client that sees `overflowed: true` can do a fresh
       full enumeration in one RPC instead of falling back to host-side `find`.
-- [ ] Honour nested `.gitignore` files (currently only the project-root
-      `.gitignore` is loaded).
-- [ ] Tests:
-    - [ ] `ChangeLog`: ordering, coalescing, overflow watermark.
-    - [ ] `resolve_within`: rejects `..` traversal, rejects symlinks
+- [x] Honour nested `.gitignore` files (walk deepest-to-shallowest per event,
+      invalidate the cached `.gitignore` for a directory when the file itself
+      changes).
+- [x] Tests:
+    - [x] `ChangeLog`: ordering, coalescing, overflow watermark.
+    - [x] `resolve_within`: rejects `..` traversal, rejects symlinks
           escaping root, accepts absolute paths inside root.
-    - [ ] `framing`: max-frame, EOF mid-frame, oversize length.
+    - [x] `framing`: max-frame, EOF mid-frame, oversize length.
 - [ ] Bench: `cargo bench` comparing `fs.read` via daemon vs. `cat` fork.
 
 ## Indexing (M2)

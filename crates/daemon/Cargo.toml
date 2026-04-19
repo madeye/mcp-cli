@@ -25,3 +25,6 @@ grep-regex.workspace = true
 ignore.workspace = true
 notify.workspace = true
 parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
