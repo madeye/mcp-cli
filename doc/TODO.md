@@ -102,10 +102,12 @@ down from +76 % to +61 % via two server-side reductions
 (`fs_read_batch`, `search_grep ?context`). Two more leverage points
 identified but not pursued in this iteration:
 
-- [ ] Compound `code_symbols_batch` / `code_outline_batch` taking
-      a `paths: Vec<String>` so a multi-file structural pass is one
-      MCP turn. Six `code_symbols` calls in v5 — small target this
-      run, larger target on cross-file refactors.
+- [x] Compound `code_symbols_batch` / `code_outline_batch` taking
+      `requests: Vec<{path}>` so a multi-file structural pass is
+      one MCP turn. Same shape as `fs_read_batch`: per-item
+      `result` / `error`; per-request failures don't abort.
+      Integration test exercises both real-source and missing-path
+      paths through the bridge → daemon → tree-sitter loop.
 - [ ] Cross-session warm cache. Today every bench starts with a
       cold daemon; a long-lived daemon (the `doc/services/`
       always-on shape) would amortise `search_grep` LRU and

@@ -46,7 +46,9 @@ pub mod methods {
     pub const GIT_STATUS: &str = "git.status";
     pub const SEARCH_GREP: &str = "search.grep";
     pub const CODE_OUTLINE: &str = "code.outline";
+    pub const CODE_OUTLINE_BATCH: &str = "code.outline_batch";
     pub const CODE_SYMBOLS: &str = "code.symbols";
+    pub const CODE_SYMBOLS_BATCH: &str = "code.symbols_batch";
     pub const METRICS_GAIN: &str = "metrics.gain";
     pub const METRICS_TOOL_LATENCY: &str = "metrics.tool_latency";
 }
@@ -339,6 +341,52 @@ pub struct CodeSymbolsResult {
     /// Flat, de-duplicated list of top-level symbol names (function names,
     /// type names, etc.). For a full structural view, use `code.outline`.
     pub names: Vec<String>,
+}
+
+// ---- code.outline_batch / code.symbols_batch ----------------------------
+
+/// Batch many `code.outline` calls into one round-trip. Same shape as
+/// `fs.read_batch`: per-entry `result` or `error`; per-request failures
+/// don't abort the batch. Closes the agent loop when the model needs
+/// the structural view of N files at once (the M5 bench's "list
+/// symbols across these 6 files" pattern was 6 turns; this folds it
+/// into 1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeOutlineBatchParams {
+    pub requests: Vec<CodeOutlineParams>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeOutlineBatchResult {
+    pub responses: Vec<CodeOutlineBatchItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeOutlineBatchItem {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<CodeOutlineResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<RpcError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeSymbolsBatchParams {
+    pub requests: Vec<CodeSymbolsParams>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeSymbolsBatchResult {
+    pub responses: Vec<CodeSymbolsBatchItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeSymbolsBatchItem {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<CodeSymbolsResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<RpcError>,
 }
 
 // ---- metrics.gain --------------------------------------------------------

@@ -277,7 +277,9 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
         protocol::methods::GIT_STATUS => handlers::git_status(daemon, req.params),
         protocol::methods::SEARCH_GREP => handlers::search_grep(daemon, req.params),
         protocol::methods::CODE_OUTLINE => handlers::code_outline(daemon, req.params),
+        protocol::methods::CODE_OUTLINE_BATCH => handlers::code_outline_batch(daemon, req.params),
         protocol::methods::CODE_SYMBOLS => handlers::code_symbols(daemon, req.params),
+        protocol::methods::CODE_SYMBOLS_BATCH => handlers::code_symbols_batch(daemon, req.params),
         protocol::methods::METRICS_GAIN => handlers::metrics_gain(daemon, req.params),
         protocol::methods::METRICS_TOOL_LATENCY => {
             handlers::metrics_tool_latency(daemon, req.params)
