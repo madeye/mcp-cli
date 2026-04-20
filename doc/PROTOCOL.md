@@ -1,0 +1,295 @@
+# Protocol reference
+
+Length-prefixed JSON-RPC over a Unix domain socket. The bridge
+talks MCP on stdio with the agent; this doc describes the
+daemon's RPC surface, which is a one-to-one mapping under each
+bridge MCP `tools/call`.
+
+The canonical type definitions live in `crates/protocol/src/lib.rs`
+— this file is curated prose; the source is authoritative.
+
+## Framing
+
+```
++----------------+----------------------------------------+
+| u32 big-endian | JSON body (`Request` or `Response`)    |
+| body length    |                                        |
++----------------+----------------------------------------+
+```
+
+`MAX_FRAME` is 16 MiB. Frames larger than that are rejected
+without reading the body.
+
+## Request / Response shapes
+
+```jsonc
+// Request
+{"id": 42, "method": "fs.read", "params": { ... }}
+
+// Response (success)
+{"id": 42, "result": { ... }}
+
+// Response (error)
+{"id": 42, "error": {"code": -32602, "message": "invalid params: …"}}
+```
+
+Error codes follow JSON-RPC convention loosely:
+`-32601` unknown method, `-32602` invalid params, `-32700` JSON
+parse failure. Per-method errors use a per-handler offset
+(`-32010`–`-32099`) — see the source for exact mappings.
+
+## Methods
+
+### `ping`
+
+Liveness check. Always returns `{"ok": true, "version": "0.1"}`.
+
+### `fs.read`
+
+```jsonc
+// params
+{"path": "src/main.rs", "offset": 0, "length": 65536}
+
+// result
+{"path": "src/main.rs", "bytes_read": 65536, "total_size": 70000,
+ "content": "…", "truncated": true}
+```
+
+`offset` defaults to `0`, `length` to 256 KiB. mmap-backed; any
+process modifying the file mid-read risks SIGBUS (the standard
+mmap tradeoff). `path` is interpreted relative to the daemon's
+project root and rejected if it escapes the root after canonicalization.
+
+### `fs.read_batch`
+
+```jsonc
+// params
+{"requests": [{"path": "a.rs"}, {"path": "b.rs", "offset": 1024}]}
+
+// result
+{"responses": [
+  {"path": "a.rs", "result": {"content": "…", …}},
+  {"path": "b.rs", "result": null, "error": {"code": -32010, "message": "open: …"}}
+]}
+```
+
+Per-request errors do not abort the batch; one of `result` /
+`error` is set per entry. The path is echoed in each response so
+callers can correlate without relying on positional matching.
+
+### `fs.snapshot`
+
+```jsonc
+// no params
+// result
+{"version": 8742, "capacity": 4096, "oldest_retained": 4646}
+```
+
+Snapshot the watcher's current monotonic version cursor + the
+oldest version still queryable via `fs.changes`. `capacity` is
+the size of the in-memory ring buffer.
+
+### `fs.changes`
+
+```jsonc
+// params
+{"since": 8742}
+
+// result
+{"version": 8800, "changes": [
+   {"path": "src/foo.rs", "kind": "modified", "version": 8743},
+   {"path": "src/bar.rs", "kind": "created",  "version": 8744}
+ ], "overflowed": false}
+```
+
+When `overflowed: true`, the client missed events (they fell off
+the ring) and must re-snapshot via `fs.scan`.
+
+### `fs.scan`
+
+```jsonc
+// params
+{"path": "crates", "max_results": 1000}
+
+// result
+{"version": 8800, "files": ["crates/protocol/src/lib.rs", …],
+ "truncated": false}
+```
+
+Full enumeration. Gitignore-aware, hard-excludes `.git/`. The
+returned `version` is captured at the start of the walk so a
+follow-up `fs.changes(since: version)` closes any race with
+events landing during the scan.
+
+### `git.status`
+
+```jsonc
+// params
+{"repo": null, "compact": false}
+
+// result (raw)
+{"branch": "main", "head": "<sha>", "entries": [
+   {"path": "Cargo.toml", "status": "wt_modified"}, …
+ ]}
+
+// result (compact)
+{"branch": "main", "head": "<sha>", "compact": {
+   "by_class": [
+     {"class": "modified", "count": 12, "by_dir": [
+        {"dir": "src", "count": 9}, {"dir": "tests", "count": 3}
+     ]}
+   ],
+   "total": 12
+ }}
+```
+
+`status` is a comma-joined libgit2 status (e.g.
+`"index_modified,wt_modified"`). The compact form picks the
+"most actionable" class per entry (`conflicted` > `deleted` >
+`renamed` > `typechange` > `modified` > `untracked` > `ignored`)
+and rolls up to per-directory counts.
+
+### `search.grep`
+
+```jsonc
+// params
+{"pattern": "fn main",
+ "path": null, "glob": "*.rs",
+ "max_results": 200, "case_insensitive": false,
+ "compact": false, "context": 3}
+
+// result
+{"hits": [
+   {"path": "crates/daemon/src/main.rs", "line_number": 65,
+    "line": "async fn main() -> Result<()> {",
+    "context": [
+       {"line_number": 63, "line": "#[tokio::main]"},
+       {"line_number": 64, "line": ""},
+       {"line_number": 66, "line": "    tracing_subscriber::fmt()"},
+       {"line_number": 67, "line": "        .with_env_filter(…)"}
+    ]}
+ ], "truncated": false}
+```
+
+`compact: true` instead returns a `compact` field with one
+bucket per file (`{path, matches, first_line, last_line}`) and
+omits `hits`.
+
+`context` is capped at 20 server-side. The cache key includes
+both `compact` and `context` so different shapes don't satisfy
+each other.
+
+### `code.outline` / `code.outline_batch`
+
+```jsonc
+// params
+{"path": "crates/daemon/src/handlers.rs"}
+
+// result
+{"path": "crates/daemon/src/handlers.rs", "language": "rust",
+ "entries": [
+   {"kind": "function", "name": "fs_read",
+    "start_byte": 1024, "end_byte": 1280,
+    "start_line": 33, "end_line": 38},
+   …
+ ]}
+```
+
+Tree-sitter parse + per-language outline query. Supported
+languages today: rust, python, c, cpp, typescript, tsx, go.
+Unsupported extensions return `language: null` and an empty
+`entries` list (not an error).
+
+`code.outline_batch` takes `{requests: [{path}, …]}` and returns
+`{responses: [{path, result?, error?}, …]}`. Per-request
+failures don't abort the batch.
+
+### `code.symbols` / `code.symbols_batch`
+
+Flat de-duplicated list of top-level symbol names — cheaper
+than `code.outline` when only names are needed. Same batch
+shape as outline.
+
+```jsonc
+// params
+{"path": "crates/daemon/src/handlers.rs"}
+
+// result
+{"path": "crates/daemon/src/handlers.rs", "language": "rust",
+ "names": ["fs_read", "fs_read_batch", "fs_read_inner", …]}
+```
+
+### `metrics.gain`
+
+```jsonc
+// no params
+// result
+{"per_tool": [
+   {"tool": "search.grep", "calls": 70, "raw_bytes": 480000, "compacted_bytes": 240000},
+   {"tool": "fs.read",      "calls": 50, "raw_bytes": 320000, "compacted_bytes": 320000}
+ ],
+ "total_raw_bytes": 800000,
+ "total_compacted_bytes": 560000,
+ "savings_ratio": 0.30}
+```
+
+Per-tool byte counters. `raw_bytes` is what the daemon would
+have shipped for the call; `compacted_bytes` is what it
+actually serialized. Tools that never used `?compact` show
+`raw == compacted`. `savings_ratio` = `1 - compacted/raw`,
+clamped to `[0, 1]`.
+
+### `metrics.tool_latency`
+
+```jsonc
+// no params
+// result
+{"per_tool": [
+   {"tool": "search.grep", "calls": 70, "latency_sum_us": 350000,
+    "mean_us": 5000, "max_us": 23000},
+   …
+ ]}
+```
+
+Per-tool wall-clock counters in microseconds. Recorded in
+`server::dispatch` for every method (success or error), so this
+is automatic — handlers don't have to instrument themselves.
+Sorted by `latency_sum_us` desc.
+
+## Bridge → daemon name mapping
+
+The bridge's MCP tool names are flat-cased; the daemon's RPC
+methods are dotted. Mapping is 1:1:
+
+| MCP `tools/call` name | Daemon method |
+|---|---|
+| `fs_read` | `fs.read` |
+| `fs_read_batch` | `fs.read_batch` |
+| `fs_snapshot` | `fs.snapshot` |
+| `fs_changes` | `fs.changes` |
+| `fs_scan` | `fs.scan` |
+| `git_status` | `git.status` |
+| `search_grep` | `search.grep` |
+| `code_outline` | `code.outline` |
+| `code_outline_batch` | `code.outline_batch` |
+| `code_symbols` | `code.symbols` |
+| `code_symbols_batch` | `code.symbols_batch` |
+| `metrics_gain` | `metrics.gain` |
+| `metrics_tool_latency` | `metrics.tool_latency` |
+
+## Design rules for adding a new method
+
+1. **Define types in `protocol/`.** Put the `*Params` and
+   `*Result` structs there with serde derives. Add a method
+   constant under `methods::`.
+2. **Add the daemon handler.** Each non-trivial method should
+   have a `*_inner(daemon, &params) -> Result<*Result, RpcError>`
+   so future `*_batch` siblings can compose.
+3. **Wire dispatch.** One arm in `daemon::server::dispatch`'s
+   match.
+4. **Expose via the bridge.** One arm in `mcp::tools_call`'s
+   match + one entry in `tool_definitions()`. Keep the MCP
+   description short — schema beats prose for steering the
+   model (the M5 v3→v4 result trail covers the why).
+5. **Test through the bridge.** `crates/mcp-bridge/tests/`
+   already has end-to-end harnesses you can extend.
