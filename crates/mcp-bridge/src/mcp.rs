@@ -136,7 +136,7 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "fs_read",
-            "description": "Read a file from the project root via the daemon's mmap-backed VFS. For reading multiple files, or multiple regions of the same file (e.g. paging through a large source file), PREFER `fs_read_batch` — one MCP round-trip beats N in wall-clock. For files larger than ~20 KB, consider calling `code_outline` first to find the relevant span instead of scroll-paging.",
+            "description": "Read a file from the project root via the daemon's mmap-backed VFS.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -149,7 +149,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "fs_read_batch",
-            "description": "Read many files (or many regions of the same file) in a single MCP call. Each request in the list is an `fs_read` spec — `{path, offset?, length?}`. The response is a parallel list of `{path, result?, error?}` entries; per-request failures do not abort the batch. Strongly preferred over N separate `fs_read` calls when the paths are known upfront.",
+            "description": "Read many files (or regions) in one MCP call. Response is a parallel list of {result?, error?}; per-request failures do not abort the batch.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
