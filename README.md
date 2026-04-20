@@ -7,26 +7,27 @@ shell-tool wrappers.
 
 ## Headline numbers
 
-Measured on codex (`rust-v0.121.0`) analysing its own source tree —
-single-sample, full writeup in
-[`bench/codex-forkexec/results/2026-04-20-rust-v0.121.0-prefer-mcp.md`](./bench/codex-forkexec/results/2026-04-20-rust-v0.121.0-prefer-mcp.md):
+Measured on codex (`rust-v0.121.0`) analysing its own source tree
+— single-sample, full writeup in
+[`bench/codex-forkexec/results/2026-04-20-rust-v0.121.0-search-ctx.md`](./bench/codex-forkexec/results/2026-04-20-rust-v0.121.0-search-ctx.md)
+(latest), with the [first run](./bench/codex-forkexec/results/2026-04-20-rust-v0.121.0-prefer-mcp.md)
+and three intermediate iterations alongside.
 
 | metric | baseline | with mcp-cli | delta |
 |---|---:|---:|---:|
-| `execve` total | 103 | 22 | **−79 %** |
-| `rg` invocations | 24 | 0 | −100 % |
-| `sed` invocations | 58 | 2 | −97 % |
-| input tokens | 2,159,617 | 1,755,579 | **−19 %** |
-| output tokens | 9,896 | 8,641 | −13 % |
-| MCP calls on the daemon | 0 | 124 | *`fs_read` ×50, `search_grep` ×70, `fs_scan` ×4* |
+| `execve` total | 83 | 22 | **−73 %** |
+| `rg` invocations | 13 | 0 | −100 % |
+| `sed` invocations | 50 | 2 | −96 % |
+| MCP calls on the daemon | 0 | 73 | *`search_grep` ×32 (31 with context), `fs_read` ×21, `code_symbols` ×6, …* |
+| wall clock (s) | 201 | 324 | +61 % |
 
-Wall clock regressed 45 % on this run — codex made ~2.7× more turns
-because each MCP call is atomic while a bash command can be a
-pipeline. The bench writeup walks through which compound/batch MCP
-tools would close the gap (kernel overhead and token budget are
-already wins; wall-clock recovery needs MCP-tool-shape work, not
-daemon-perf work). See [`bench/codex-forkexec/`](./bench/codex-forkexec/)
-to reproduce.
+The wall-clock regression — every MCP call is atomic where bash
+is a pipeline — narrowed run-over-run as we collapsed two-call
+patterns server-side: 124 MCP turns / 375 s in the first run
+(`prefer-mcp`), 73 MCP turns / 324 s after `search_grep ?context`
+landed (this run). Each step of progress is a result file under
+[`bench/codex-forkexec/results/`](./bench/codex-forkexec/results/);
+they're worth reading as a sequence.
 
 ## Architecture
 
