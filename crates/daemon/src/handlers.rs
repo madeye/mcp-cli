@@ -8,12 +8,19 @@ use memmap2::Mmap;
 use protocol::{
     CodeOutlineParams, CodeOutlineResult, CodeSymbolsParams, CodeSymbolsResult, FsChangesParams,
     FsChangesResult, FsReadParams, FsReadResult, FsScanParams, FsScanResult, FsSnapshotResult,
-    GitStatusEntry, GitStatusParams, GitStatusResult, RpcError, SearchGrepParams, SearchGrepResult,
-    SearchHit,
+    GitStatusEntry, GitStatusParams, GitStatusResult, MetricsGainParams, RpcError,
+    SearchGrepParams, SearchGrepResult, SearchHit,
 };
 
+use crate::compact;
 use crate::search_cache::SearchKey;
 use crate::server::{resolve_within, Daemon};
+
+/// How many directory rows we keep per status class in compact mode
+/// before collapsing the rest into a synthetic `(other)` row. Picked
+/// empirically — enough to spot patterns, few enough that a 5000-file
+/// dirty tree still serializes to a kilobyte or two.
+const GIT_STATUS_TOP_DIRS_PER_CLASS: usize = 16;
 
 const FS_READ_DEFAULT_LIMIT: u64 = 256 * 1024;
 const SEARCH_DEFAULT_LIMIT: usize = 200;
@@ -169,7 +176,7 @@ pub fn git_status(
         .statuses(Some(&mut opts))
         .map_err(|e| RpcError::new(-32021, format!("statuses: {e}")))?;
 
-    let entries = statuses
+    let entries: Vec<GitStatusEntry> = statuses
         .iter()
         .filter_map(|s| {
             let path = s.path()?.to_string();
@@ -180,12 +187,41 @@ pub fn git_status(
         })
         .collect();
 
-    Ok(serde_json::to_value(GitStatusResult {
-        branch,
-        head: head_oid,
-        entries,
-    })
-    .unwrap())
+    let raw_result = GitStatusResult {
+        branch: branch.clone(),
+        head: head_oid.clone(),
+        entries: entries.clone(),
+        compact: None,
+    };
+    let raw_bytes = serialized_size(&raw_result);
+
+    let result = if params.compact {
+        let compact = compact::git_status_compact(&entries, GIT_STATUS_TOP_DIRS_PER_CLASS);
+        GitStatusResult {
+            branch,
+            head: head_oid,
+            entries: Vec::new(),
+            compact: Some(compact),
+        }
+    } else {
+        raw_result
+    };
+    let value = serde_json::to_value(&result).unwrap();
+    let compacted_bytes = serialized_size(&result);
+    daemon
+        .metrics
+        .record(protocol::methods::GIT_STATUS, raw_bytes, compacted_bytes);
+    Ok(value)
+}
+
+/// Approximate serialized byte cost of a response. We use the JSON
+/// length here because that's what the bridge actually ships over UDS;
+/// `metrics.gain` is meant to reflect the agent-visible cost of a
+/// response, not in-memory size.
+fn serialized_size<T: serde::Serialize>(value: &T) -> u64 {
+    serde_json::to_vec(value)
+        .map(|v| v.len() as u64)
+        .unwrap_or(0)
 }
 
 fn format_status(status: git2::Status) -> String {
@@ -257,7 +293,8 @@ pub fn search_grep(
         case_insensitive: params.case_insensitive,
     };
     if let Some(cached) = daemon.search_cache.get(version, &cache_key) {
-        return Ok(serde_json::to_value(cached).unwrap());
+        // Cache stores the raw form; compact on the way out if asked.
+        return Ok(finalize_search(daemon, cached, params.compact));
     }
 
     let matcher = RegexMatcherBuilder::new()
@@ -330,11 +367,40 @@ pub fn search_grep(
         }
     }
 
-    let result = SearchGrepResult { hits, truncated };
+    let raw = SearchGrepResult {
+        hits,
+        truncated,
+        compact: None,
+    };
+    daemon.search_cache.insert(version, cache_key, raw.clone());
+    Ok(finalize_search(daemon, raw, params.compact))
+}
+
+/// Apply optional compaction + record per-call gain metrics on a
+/// search result that's already been computed (or just pulled from
+/// cache). Always emits a JSON value ready to ship to the bridge.
+fn finalize_search(
+    daemon: &Daemon,
+    raw: SearchGrepResult,
+    compact_requested: bool,
+) -> serde_json::Value {
+    let raw_bytes = serialized_size(&raw);
+    let result = if compact_requested {
+        let compact = compact::search_grep_compact(&raw.hits);
+        SearchGrepResult {
+            hits: Vec::new(),
+            truncated: raw.truncated,
+            compact: Some(compact),
+        }
+    } else {
+        raw
+    };
+    let value = serde_json::to_value(&result).unwrap();
+    let compacted_bytes = serialized_size(&result);
     daemon
-        .search_cache
-        .insert(version, cache_key, result.clone());
-    Ok(serde_json::to_value(result).unwrap())
+        .metrics
+        .record(protocol::methods::SEARCH_GREP, raw_bytes, compacted_bytes);
+    value
 }
 
 pub fn code_outline(
@@ -375,4 +441,15 @@ pub fn code_symbols(
         names,
     })
     .unwrap())
+}
+
+pub fn metrics_gain(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    // Params struct is empty today; reject anything unexpected so a
+    // future schema change can pin the parser without breaking clients.
+    let _params: MetricsGainParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    Ok(serde_json::to_value(daemon.metrics.snapshot()).unwrap())
 }

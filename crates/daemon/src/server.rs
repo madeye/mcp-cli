@@ -14,6 +14,7 @@ use crate::buffer_pool::BufferPool;
 use crate::changelog::ChangeLog;
 use crate::framing::{read_frame_into, write_frame, MAX_FRAME};
 use crate::handlers;
+use crate::metrics::ToolMetrics;
 use crate::parse_cache::ParseCache;
 use crate::prewarm;
 use crate::search_cache::SearchCache;
@@ -39,6 +40,7 @@ pub struct Daemon {
     pub search_cache: Arc<SearchCache>,
     pub backends: BackendRegistry,
     pub frame_pool: Arc<BufferPool>,
+    pub metrics: Arc<ToolMetrics>,
 }
 
 pub struct Config {
@@ -79,12 +81,14 @@ pub async fn serve(cfg: Config) -> Result<()> {
     // count; one entry per in-flight request frame is enough. Buffers
     // beyond FRAME_BUFFER_RECYCLE_CAP are dropped on return.
     let frame_pool = Arc::new(BufferPool::new(32, FRAME_BUFFER_RECYCLE_CAP));
+    let metrics = Arc::new(ToolMetrics::new());
     let daemon = Arc::new(Daemon {
         root: cfg.root,
         changelog,
         search_cache,
         backends,
         frame_pool,
+        metrics,
     });
 
     let idle = Arc::new(IdleTracker::new(cfg.idle_timeout));
@@ -252,6 +256,7 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
         protocol::methods::SEARCH_GREP => handlers::search_grep(daemon, req.params),
         protocol::methods::CODE_OUTLINE => handlers::code_outline(daemon, req.params),
         protocol::methods::CODE_SYMBOLS => handlers::code_symbols(daemon, req.params),
+        protocol::methods::METRICS_GAIN => handlers::metrics_gain(daemon, req.params),
         other => Err(RpcError::new(-32601, format!("unknown method: {other}"))),
     };
     match result {

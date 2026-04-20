@@ -46,6 +46,7 @@ pub mod methods {
     pub const SEARCH_GREP: &str = "search.grep";
     pub const CODE_OUTLINE: &str = "code.outline";
     pub const CODE_SYMBOLS: &str = "code.symbols";
+    pub const METRICS_GAIN: &str = "metrics.gain";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +71,12 @@ pub struct FsReadResult {
 pub struct GitStatusParams {
     #[serde(default)]
     pub repo: Option<String>,
+    /// When true, the response carries `compact` and omits `entries`.
+    /// The compact form groups entries by status class with
+    /// per-directory counts — usually 5–10× smaller than the full
+    /// list for a non-trivial dirty tree.
+    #[serde(default)]
+    pub compact: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,7 +89,36 @@ pub struct GitStatusEntry {
 pub struct GitStatusResult {
     pub branch: Option<String>,
     pub head: Option<String>,
+    /// Per-file detail. Omitted in compact mode (see `compact`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entries: Vec<GitStatusEntry>,
+    /// Roll-up summary requested via `params.compact = true`. Omitted
+    /// in raw mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact: Option<GitStatusCompact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GitStatusCompact {
+    /// One entry per status class actually observed (`modified`,
+    /// `untracked`, `deleted`, `renamed`, `typechange`, `conflicted`).
+    pub by_class: Vec<GitStatusClassBucket>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GitStatusClassBucket {
+    pub class: String,
+    pub count: usize,
+    /// Top directories under this class with their per-directory counts,
+    /// ordered by count descending.
+    pub by_dir: Vec<GitStatusDirCount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GitStatusDirCount {
+    pub dir: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +132,12 @@ pub struct SearchGrepParams {
     pub max_results: Option<usize>,
     #[serde(default)]
     pub case_insensitive: bool,
+    /// When true, the response carries `compact` and omits `hits` —
+    /// one bucket per matching file with match count + first / last
+    /// line numbers. Use when the agent only needs to know which files
+    /// match, not every line.
+    #[serde(default)]
+    pub compact: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,8 +149,27 @@ pub struct SearchHit {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchGrepResult {
+    /// Per-line detail. Omitted in compact mode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hits: Vec<SearchHit>,
     pub truncated: bool,
+    /// Roll-up requested via `params.compact = true`. Omitted in raw mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact: Option<SearchGrepCompact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SearchGrepCompact {
+    pub buckets: Vec<SearchFileBucket>,
+    pub total_matches: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SearchFileBucket {
+    pub path: String,
+    pub matches: usize,
+    pub first_line: u64,
+    pub last_line: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,4 +280,29 @@ pub struct CodeSymbolsResult {
     /// Flat, de-duplicated list of top-level symbol names (function names,
     /// type names, etc.). For a full structural view, use `code.outline`.
     pub names: Vec<String>,
+}
+
+// ---- metrics.gain --------------------------------------------------------
+
+/// `metrics.gain` takes no params today; reserved struct for forward-compat.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetricsGainParams {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetricsGainResult {
+    pub per_tool: Vec<ToolGainEntry>,
+    pub total_raw_bytes: u64,
+    pub total_compacted_bytes: u64,
+    /// `1.0 - compacted/raw`, clamped to `[0.0, 1.0]`. `0.0` if no
+    /// calls have been recorded yet.
+    pub savings_ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolGainEntry {
+    /// Method name (e.g. `git.status`, `search.grep`, `fs.read`).
+    pub tool: String,
+    pub calls: u64,
+    pub raw_bytes: u64,
+    pub compacted_bytes: u64,
 }

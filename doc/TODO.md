@@ -153,15 +153,17 @@ install". What remains here is hardening + optional system integration.)
 Inspired by [`rtk`](https://github.com/rtk-ai/rtk). Goal: shrink
 tool-output bytes 60–90 % so the agent burns less context per call.
 
-- [ ] `crates/daemon/src/compact/` module with the four primitives
-      (`filter`, `group`, `truncate`, `dedupe`) as composable functions
-      over `&str` / `Vec<Hit>` / `Vec<DiagnosticEntry>`. Cover with
-      table-driven unit tests so each tool wrapper can lean on them.
-- [ ] `git.status` compact mode: group by status class, per-directory
-      counts, drop `clean`/`ignored`. `?compact: bool` param, default
-      on once parity tested.
-- [ ] `search.grep` compact mode: bucket by file with match count +
-      first/last line numbers; full-detail mode behind explicit flag.
+- [x] `crates/daemon/src/compact/` module with grouping primitives
+      (`git_status_compact`, `search_grep_compact`); table-driven unit
+      tests cover the status-class precedence rules and per-file
+      bucketing. `filter` / `truncate` / `dedupe` primitives still
+      pending — added on demand as future formatters need them.
+- [x] `git.status` compact mode: group by status class, per-directory
+      counts, drop `clean`. `?compact: bool` param defaults off; flip
+      default later once we've measured parity in the M5 benchmark.
+- [x] `search.grep` compact mode: bucket by file with match count +
+      first/last line numbers; full-detail still emitted when
+      `compact: false` (default).
 - [ ] `code.outline` `signatures-only` formatter (rtk
       `read --aggressive` equivalent) reusing the existing tree-sitter
       parse cache.
@@ -181,9 +183,10 @@ tool-output bytes 60–90 % so the agent burns less context per call.
 - [ ] Per-`(command, cwd, file-mtime-fingerprint)` LRU cache so a
       re-run with no source changes returns the cached structured
       result, the same way `search.grep` caches by ChangeLog version.
-- [ ] `metrics.gain` RPC: per-tool counters of (raw_bytes,
-      compacted_bytes, calls). Backed by atomics on the daemon side;
-      cheap to keep and read.
+- [x] `metrics.gain` RPC (`crates/daemon/src/metrics.rs`): per-tool
+      counters of (raw_bytes, compacted_bytes, calls). Backed by
+      atomics on the daemon side; cheap to keep and read. Bridge
+      tool name `metrics_gain`.
 - [ ] Bridge tool definitions for the new MCP surface, plus
       `doc/INTEGRATION.md` snippets showing the agent which tool to
       prefer over raw `Bash(...)` for each common workflow.

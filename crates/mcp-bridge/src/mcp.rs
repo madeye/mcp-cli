@@ -118,6 +118,7 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
         "search_grep" => protocol::methods::SEARCH_GREP,
         "code_outline" => protocol::methods::CODE_OUTLINE,
         "code_symbols" => protocol::methods::CODE_SYMBOLS,
+        "metrics_gain" => protocol::methods::METRICS_GAIN,
         other => return Err(anyhow::anyhow!("unknown tool: {other}")),
     };
 
@@ -173,17 +174,18 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "git_status",
-            "description": "Return git status entries for the project (in-process libgit2, no fork/exec).",
+            "description": "Return git status entries for the project (in-process libgit2, no fork/exec). Set `compact: true` to get a roll-up by status class (modified / untracked / deleted / etc.) with per-directory counts instead of every file — much smaller on large dirty trees.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "repo": {"type": "string", "description": "Optional repo path relative to project root."}
+                    "repo": {"type": "string", "description": "Optional repo path relative to project root."},
+                    "compact": {"type": "boolean", "default": false, "description": "Return a class+directory roll-up instead of the full per-file list."}
                 }
             }
         },
         {
             "name": "search_grep",
-            "description": "Run a regex search using ripgrep's library (grep-searcher) over the project tree.",
+            "description": "Run a regex search using ripgrep's library (grep-searcher) over the project tree. Set `compact: true` to bucket hits per file (one row per matching file with match count + first/last line numbers) instead of returning every line — much smaller payload when the agent only needs to know which files matched.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -191,7 +193,8 @@ fn tool_definitions() -> Value {
                     "path": {"type": "string", "description": "Subdirectory relative to project root."},
                     "glob": {"type": "string", "description": "Override glob (e.g. '*.rs')."},
                     "max_results": {"type": "integer", "minimum": 1, "default": 200},
-                    "case_insensitive": {"type": "boolean", "default": false}
+                    "case_insensitive": {"type": "boolean", "default": false},
+                    "compact": {"type": "boolean", "default": false, "description": "Bucket hits per file instead of returning every matching line."}
                 },
                 "required": ["pattern"]
             }
@@ -217,6 +220,11 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["path"]
             }
+        },
+        {
+            "name": "metrics_gain",
+            "description": "Per-tool byte-savings counters: how many bytes the daemon would have shipped (raw_bytes) vs. how many it actually serialized (compacted_bytes), with a session-wide savings ratio. Useful for the agent to verify its compact-mode requests are paying off.",
+            "inputSchema": {"type": "object", "properties": {}}
         }
     ])
 }

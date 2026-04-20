@@ -1,9 +1,11 @@
 mod backends;
 mod buffer_pool;
 mod changelog;
+mod compact;
 mod framing;
 mod handlers;
 mod languages;
+mod metrics;
 mod outline;
 mod parse_cache;
 mod prewarm;

@@ -107,6 +107,7 @@ mod tests {
         SearchGrepResult {
             hits: paths.iter().map(|p| hit(p, 1)).collect(),
             truncated: false,
+            compact: None,
         }
     }
 
