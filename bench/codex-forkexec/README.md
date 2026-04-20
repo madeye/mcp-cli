@@ -3,9 +3,17 @@
 This benchmark is the load-bearing measurement for the project's
 core claim: **mounting mcp-cli as an MCP plugin in Codex eliminates
 the per-call `fork`/`exec` of `cat`, `grep`, `git`, …** Every other
-milestone (M3 backends, M4 I/O ceiling, M6 compaction) is a
+milestone (M3 backends, M4 I/O ceiling, M7 compaction) is a
 no-op if the agent never actually stops shelling out — so we
 measure that directly.
+
+> **Headline finding from the first real run** ([results/2026-04-20-rust-v0.121.0.md](./results/2026-04-20-rust-v0.121.0.md)):
+> codex did **not** route any work through `mcp-cli`'s MCP tools.
+> Per-binary fork/exec deltas were within model-variance noise
+> (-5 over 93 calls); the only `mcp_tool_call` events that fired
+> were codex's own startup discovery (`list_mcp_resources`).
+> Closing this gap needs either a codex-side preference rule or a
+> Bash-rewriting hook (rtk-style) — neither lives in mcp-cli today.
 
 ## What it does
 
@@ -15,11 +23,19 @@ measure that directly.
    * **Baseline** — vanilla Codex, no MCP servers configured.
    * **mcp-cli** — same Codex install, but with `mcp-cli install
      --target codex` already applied so the bridge is mounted.
-3. Wraps each run with an `execve` tracer:
+3. Wraps each run with an `execve` tracer (auto-picked):
    * Linux: `strace -e trace=execve -f -o trace.log codex exec ...`
-   * macOS: `sudo dtruss -f -t execve codex exec ...` (requires root)
-4. Parses both traces, tabulates the per-binary `execve` count,
-   wall-clock, and token usage delta.
+   * macOS root: `dtruss -f -t execve codex exec ...`
+   * Otherwise: **shim mode** — PATH-shadow wrappers that bump a
+     per-binary counter file before delegating to the real binary.
+     Works without root by setting `$ZDOTDIR` so codex's `zsh -lc`
+     re-prepends the shim dir after the user's profile, and by
+     passing `--add-dir "$OUT_DIR"` so codex's sandbox lets the
+     counter writes through.
+4. Parses each trace (or counter dir), tabulates per-binary
+   `execve` count, wall-clock, codex token usage, and the codex
+   `mcp_tool_call` events grouped by `server/tool` so you can see
+   whether the daemon was actually exercised.
 
 ## Workload
 

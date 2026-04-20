@@ -38,10 +38,20 @@ DAEMON_REPLACED = (
     "git",
 )
 
+# Loose pattern matches both human-readable lines (`prompt tokens: 42`)
+# and the JSON keys codex exec --json emits (`"input_tokens":42`,
+# `"cached_input_tokens":...`, `"output_tokens":...`). Cached tokens
+# are tracked separately so the report can distinguish "model billed
+# them as cache hits" from "fresh prompt bytes".
 TOKEN_RE = re.compile(
-    r"(input|output|prompt|completion)\s+tokens?\s*[:=]\s*(\d+)",
+    r'"?(input|output|prompt|completion|cached_input|reasoning_output)"?[_ ]?tokens?"?\s*[:=]\s*(\d+)',
     re.IGNORECASE,
 )
+
+# `mcp_tool_call` events fire when codex routes through an MCP server.
+# Counting them tells us whether codex actually used mcp-cli's tools
+# vs. just fell back to its built-in Bash/Read.
+_MCP_TOOL_RE = re.compile(r'"type":"mcp_tool_call"[^{]*"server":"([^"]+)"[^{]*"tool":"([^"]+)"')
 
 
 def read_int(path: Path) -> int | None:
@@ -67,14 +77,29 @@ def parse_tokens(stdout: Path) -> dict[str, int]:
         for m in TOKEN_RE.finditer(line):
             kind = m.group(1).lower()
             n = int(m.group(2))
-            # Normalise prompt → input, completion → output so the
-            # column header is stable regardless of which Codex
-            # version we're parsing.
-            if kind == "prompt":
-                kind = "input"
-            elif kind == "completion":
-                kind = "output"
+            # Normalise so the column header is stable regardless of
+            # which codex / non-codex source we're parsing.
+            kind = {"prompt": "input", "completion": "output"}.get(kind, kind)
             counts[kind] = max(counts.get(kind, 0), n)
+    return counts
+
+
+def parse_mcp_tool_calls(stdout: Path) -> dict[str, int]:
+    """Count codex `mcp_tool_call` events grouped by `server/tool`.
+
+    Used to expose whether codex actually routed work through
+    mcp-cli's MCP tools or stuck with its built-in Bash. A bench
+    where the with-mcp-cli run shows zero `mcp-cli/*` calls is a
+    headline finding — the integration didn't bind, the win is
+    illusory.
+    """
+    if not stdout.exists():
+        return {}
+    counts: dict[str, int] = {}
+    for line in stdout.read_text(errors="replace").splitlines():
+        for m in _MCP_TOOL_RE.finditer(line):
+            key = f"{m.group(1)}/{m.group(2)}"
+            counts[key] = counts.get(key, 0) + 1
     return counts
 
 
@@ -95,7 +120,19 @@ def fmt_delta(a, b) -> str:
 
 
 def select_tracer() -> str:
-    return "dtruss" if platform.system() == "Darwin" else "strace"
+    """Mirror the auto-detection logic in run.sh.
+
+    `run.sh` is authoritative; this matches its preferences for the
+    case where someone calls `compare.py` directly without re-running.
+    """
+    system = platform.system()
+    if system == "Linux":
+        return "strace"
+    if system == "Darwin":
+        # dtruss only works as root; assume the common case (no root)
+        # and pick the shim format.
+        return "dtruss" if os.geteuid() == 0 else "shim"
+    return "shim"
 
 
 def row(label: str, baseline, mcp, width: int = 30) -> str:
@@ -109,22 +146,32 @@ def main() -> int:
     ap.add_argument("--target-ref", default="?")
     ap.add_argument(
         "--tracer",
-        choices=("strace", "dtruss"),
+        choices=("strace", "dtruss", "shim"),
         default=None,
         help="Override the auto-detected tracer (defaults to strace on "
-        "Linux, dtruss on macOS).",
+        "Linux, dtruss on macOS root, shim otherwise).",
     )
     args = ap.parse_args()
 
     out = Path(args.out_dir)
     tracer = args.tracer or select_tracer()
 
-    baseline_trace = out / "baseline.trace"
-    mcp_trace = out / "mcp.trace"
+    # Shim mode reads counter directories instead of trace files; the
+    # other tracers read flat files. Same downstream code either way.
+    if tracer == "shim":
+        baseline_input = out / "baseline.counters"
+        mcp_input = out / "mcp.counters"
+    else:
+        baseline_input = out / "baseline.trace"
+        mcp_input = out / "mcp.trace"
     baseline_counts = (
-        parse_trace.parse(str(baseline_trace), tracer) if baseline_trace.exists() else None
+        parse_trace.parse(str(baseline_input), tracer)
+        if baseline_input.exists()
+        else None
     )
-    mcp_counts = parse_trace.parse(str(mcp_trace), tracer) if mcp_trace.exists() else None
+    mcp_counts = (
+        parse_trace.parse(str(mcp_input), tracer) if mcp_input.exists() else None
+    )
 
     baseline_total = sum(baseline_counts.values()) if baseline_counts is not None else None
     mcp_total = sum(mcp_counts.values()) if mcp_counts is not None else None
@@ -144,12 +191,41 @@ def main() -> int:
     print("-" * 74)
     print(row("execve total", baseline_total, mcp_total))
 
-    # Per-binary breakdown for the binaries we expect to vanish.
+    # Per-binary breakdown. Show every binary that was seen in
+    # *either* run — the headline DAEMON_REPLACED list goes first for
+    # quick scanning, then any leftover binaries (sed, awk, nl, jq,
+    # …) sorted by combined call count desc.
     if baseline_counts is not None or mcp_counts is not None:
+        all_keys: set[str] = set()
+        if baseline_counts is not None:
+            all_keys.update(baseline_counts.keys())
+        if mcp_counts is not None:
+            all_keys.update(mcp_counts.keys())
+
+        # First the canonical "expected to be replaced" list, in its
+        # declaration order, for stable diffing.
+        seen: set[str] = set()
         for b in DAEMON_REPLACED:
+            if b not in all_keys:
+                continue
             base = baseline_counts.get(b) if baseline_counts is not None else None
             with_mcp = mcp_counts.get(b) if mcp_counts is not None else None
-            # Skip rows where both runs saw zero — they only add noise.
+            if (base or 0) == 0 and (with_mcp or 0) == 0:
+                continue
+            print(row(f"  {b}", base or 0, with_mcp or 0))
+            seen.add(b)
+
+        # Then everything else (sed, awk, jq, nl, …), sorted by
+        # combined-count desc so the heaviest binary is first.
+        leftovers = [k for k in all_keys if k not in seen]
+        leftovers.sort(
+            key=lambda k: -(
+                (baseline_counts or {}).get(k, 0) + (mcp_counts or {}).get(k, 0)
+            )
+        )
+        for b in leftovers:
+            base = baseline_counts.get(b) if baseline_counts is not None else None
+            with_mcp = mcp_counts.get(b) if mcp_counts is not None else None
             if (base or 0) == 0 and (with_mcp or 0) == 0:
                 continue
             print(row(f"  {b}", base or 0, with_mcp or 0))
@@ -164,7 +240,28 @@ def main() -> int:
 
     print(row("wall clock (s)", baseline_wall, mcp_wall))
     print(row("input tokens", baseline_tokens.get("input"), mcp_tokens.get("input")))
+    print(
+        row(
+            "  cached input tokens",
+            baseline_tokens.get("cached_input"),
+            mcp_tokens.get("cached_input"),
+        )
+    )
     print(row("output tokens", baseline_tokens.get("output"), mcp_tokens.get("output")))
+
+    # MCP tool-call routing — proves whether codex actually used the
+    # mounted MCP server's tools or fell back to its built-in Bash.
+    baseline_mcp_calls = parse_mcp_tool_calls(out / "baseline.stdout")
+    mcp_mcp_calls = parse_mcp_tool_calls(out / "mcp.stdout")
+    if baseline_mcp_calls or mcp_mcp_calls:
+        keys = sorted(set(baseline_mcp_calls) | set(mcp_mcp_calls))
+        print()
+        print("codex MCP tool calls (server/tool)")
+        print("-" * 74)
+        for k in keys:
+            base = baseline_mcp_calls.get(k, 0)
+            with_mcp = mcp_mcp_calls.get(k, 0)
+            print(row(f"  {k}", base, with_mcp))
 
     # Daemon-side per-tool latency, written by run.sh after the with-mcp
     # run via `metrics.tool_latency`. Only the with-mcp run has a daemon
