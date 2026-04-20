@@ -366,14 +366,19 @@ mod tests {
         let t = Arc::new(IdleTracker::new(Some(Duration::from_millis(80))));
         let t2 = t.clone();
         let wait = tokio::spawn(async move { t2.wait_for_timeout().await });
-        // Connect before the idle timer fires — it should not complete.
+        // Connect before the initial idle timer fires; the timer must
+        // now wait on notification of a later disconnect rather than
+        // firing when the original 80ms elapses.
         tokio::time::sleep(Duration::from_millis(20)).await;
         t.on_connect();
-        let fired_early =
-            tokio::time::timeout(Duration::from_millis(100), async { /* hold */ }).await;
-        assert!(fired_early.is_ok());
-        assert!(!wait.is_finished(), "timer should not have fired yet");
-        // Now disconnect and let it fire.
+        // Sleep past the original deadline to prove the timer didn't
+        // fire on the pre-connect timestamp.
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert!(
+            !wait.is_finished(),
+            "idle timer fired while a connection was open"
+        );
+        // Disconnect and let it fire within the timeout.
         t.on_disconnect();
         tokio::time::timeout(Duration::from_millis(500), wait)
             .await

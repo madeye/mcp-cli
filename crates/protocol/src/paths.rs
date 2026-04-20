@@ -12,10 +12,17 @@ use std::path::{Path, PathBuf};
 /// canonicalized project root. Parent directory is *not* created here;
 /// callers that bind do so via [`ensure_socket_parent`].
 pub fn socket_path_for(canonical_root: &Path) -> PathBuf {
+    socket_path_for_in(canonical_root, xdg_runtime_dir().as_deref())
+}
+
+/// Like [`socket_path_for`] but takes the runtime directory explicitly
+/// instead of reading `$XDG_RUNTIME_DIR`. Exposed for tests and callers
+/// that need to derive the path without touching process env.
+pub fn socket_path_for_in(canonical_root: &Path, runtime_dir: Option<&Path>) -> PathBuf {
     let hash = hash_path(canonical_root);
     let file = format!("{hash}.sock");
 
-    if let Some(dir) = xdg_runtime_dir() {
+    if let Some(dir) = runtime_dir {
         return dir.join("mcp-cli").join(file);
     }
 

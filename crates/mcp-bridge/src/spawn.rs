@@ -45,13 +45,20 @@ pub async fn spawn_and_connect(args: SpawnArgs<'_>) -> Result<UnixStream> {
 }
 
 /// Retry-connect after a spawn. Exposed so the same backoff policy can
-/// be used on transient reconnects (future M5 work).
+/// be used on transient reconnects (future M5 work). Only retries on
+/// connect errors that plausibly clear up once the daemon finishes
+/// binding — a `PermissionDenied` or `InvalidInput` means the caller's
+/// environment is wrong and no amount of waiting will help.
 pub async fn retry_connect(socket: &Path, budget: Duration) -> Result<UnixStream> {
     let deadline = std::time::Instant::now() + budget;
     let mut backoff = INITIAL_BACKOFF;
     loop {
         match UnixStream::connect(socket).await {
             Ok(s) => return Ok(s),
+            Err(e) if !is_connect_retryable(&e) => {
+                return Err(anyhow::Error::from(e)
+                    .context(format!("connect {} (non-retryable)", socket.display())));
+            }
             Err(e) => {
                 if std::time::Instant::now() >= deadline {
                     return Err(anyhow!(
@@ -116,7 +123,12 @@ fn spawn_detached(
 ) -> Result<()> {
     use std::os::unix::process::CommandExt;
 
-    protocol::paths::ensure_socket_parent(socket).ok();
+    protocol::paths::ensure_socket_parent(socket).with_context(|| {
+        format!(
+            "creating socket parent dir for {} (check filesystem permissions)",
+            socket.display()
+        )
+    })?;
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -160,7 +172,12 @@ fn spawn_detached(
     log: &Path,
     extra_args: &[String],
 ) -> Result<()> {
-    protocol::paths::ensure_socket_parent(socket).ok();
+    protocol::paths::ensure_socket_parent(socket).with_context(|| {
+        format!(
+            "creating socket parent dir for {} (check filesystem permissions)",
+            socket.display()
+        )
+    })?;
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

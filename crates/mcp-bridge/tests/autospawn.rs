@@ -46,8 +46,18 @@ fn bridge_autospawns_daemon_and_serves_fs_read() {
         .spawn()
         .expect("spawn bridge");
 
+    let socket = expected_socket_path(project.path(), runtime.path());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_exchange(&mut child, project.path());
+        // The bridge has just received a real response, so the daemon
+        // was definitely spawned — the socket must exist at the path
+        // we derived. If this fires, the bridge and protocol::paths
+        // disagree about where to put the socket.
+        assert!(
+            socket.exists(),
+            "expected daemon socket at {} after successful fs_read",
+            socket.display()
+        );
     }));
 
     // Always tear down: close stdin so the bridge exits; wait up to 5s.
@@ -55,16 +65,23 @@ fn bridge_autospawns_daemon_and_serves_fs_read() {
     let _ = wait_with_timeout(&mut child, Duration::from_secs(5));
 
     // Wait for the daemon to idle-exit (we passed --idle-timeout 2s) so
-    // the socket file is cleaned up before the next run.
-    let socket = expected_socket_path(project.path(), runtime.path());
+    // the socket file is cleaned up before the next run, then assert
+    // it actually went away — a daemon that never exits would otherwise
+    // leave this test silently passing.
     let deadline = Instant::now() + Duration::from_secs(8);
     while socket.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));
     }
+    let still_there = socket.exists();
 
     if let Err(e) = result {
         std::panic::resume_unwind(e);
     }
+    assert!(
+        !still_there,
+        "daemon socket {} did not disappear within idle-timeout budget",
+        socket.display()
+    );
 }
 
 fn run_exchange(child: &mut Child, project_root: &Path) {
@@ -191,16 +208,10 @@ fn expected_socket_path(project_root: &Path, runtime_dir: &Path) -> PathBuf {
     let canonical = project_root
         .canonicalize()
         .expect("canonicalize project root");
-    // Re-derive the path the same way protocol::paths does, but force
-    // XDG_RUNTIME_DIR to our controlled tempdir.
-    let prev = std::env::var_os("XDG_RUNTIME_DIR");
-    std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
-    let path = protocol::paths::socket_path_for(&canonical);
-    match prev {
-        Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-        None => std::env::remove_var("XDG_RUNTIME_DIR"),
-    }
-    path
+    // Derive using the runtime-dir override helper so we don't mutate
+    // the test process's env — tests run in parallel and XDG_RUNTIME_DIR
+    // races would make this flaky.
+    protocol::paths::socket_path_for_in(&canonical, Some(runtime_dir))
 }
 
 fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {

@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use toml_edit::{Array, DocumentMut, Item, Table, Value};
+use toml_edit::{value, Array, DocumentMut, Item, Table, Value};
 
 use crate::InstallOpts;
 
@@ -120,32 +120,48 @@ fn write_atomic(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// Returns true if the document was modified.
+/// Returns true if the document was modified. Only touches the keys we
+/// own (`command`, and `args` when the user hasn't set it). User-authored
+/// keys like `env`, custom `args`, or extra config survive unchanged.
 pub fn upsert_server(doc: &mut DocumentMut, bridge: &Path) -> bool {
     let bridge_str = bridge.to_string_lossy().to_string();
 
     let servers = mcp_servers_table(doc);
-    let existing = servers.get(SERVER_NAME).and_then(Item::as_table);
-    if let Some(tbl) = existing {
-        let current_cmd = tbl
-            .get("command")
-            .and_then(Item::as_str)
-            .unwrap_or_default();
-        let current_args_empty = tbl
-            .get("args")
-            .and_then(Item::as_array)
-            .map(|a| a.is_empty())
-            .unwrap_or(true);
-        if current_cmd == bridge_str && current_args_empty {
-            return false;
-        }
+    if !servers.contains_key(SERVER_NAME) {
+        let mut tbl = Table::new();
+        tbl.insert("command", value(bridge_str));
+        tbl.insert("args", Item::Value(Value::Array(Array::new())));
+        servers.insert(SERVER_NAME, Item::Table(tbl));
+        return true;
     }
 
-    let mut tbl = Table::new();
-    tbl.insert("command", toml_edit::value(bridge_str));
-    tbl.insert("args", Item::Value(Value::Array(Array::new())));
-    servers.insert(SERVER_NAME, Item::Table(tbl));
-    true
+    // Existing entry: update `command` only if it differs, and only
+    // populate `args` when absent so a user-set `args = ["--foo"]`
+    // survives re-install. Never clobber other keys.
+    let Some(tbl) = servers.get_mut(SERVER_NAME).and_then(Item::as_table_mut) else {
+        // Someone stored a non-table at the key; replace it — we can't
+        // surgically patch a scalar.
+        let mut new_tbl = Table::new();
+        new_tbl.insert("command", value(bridge_str));
+        new_tbl.insert("args", Item::Value(Value::Array(Array::new())));
+        servers.insert(SERVER_NAME, Item::Table(new_tbl));
+        return true;
+    };
+
+    let mut changed = false;
+    let current_cmd = tbl
+        .get("command")
+        .and_then(Item::as_str)
+        .unwrap_or_default();
+    if current_cmd != bridge_str {
+        tbl.insert("command", value(bridge_str));
+        changed = true;
+    }
+    if !tbl.contains_key("args") {
+        tbl.insert("args", Item::Value(Value::Array(Array::new())));
+        changed = true;
+    }
+    changed
 }
 
 /// Returns true if the server entry existed and was removed.
@@ -220,6 +236,31 @@ args = []
         let changed = upsert_server(&mut doc, Path::new("/new/path"));
         assert!(changed);
         assert!(doc.to_string().contains("/new/path"));
+    }
+
+    #[test]
+    fn upsert_preserves_user_keys_in_our_table() {
+        let start = r#"
+[mcp_servers.mcp-cli]
+command = "/old/path"
+args = ["--verbose"]
+cwd = "/tmp/work"
+
+[mcp_servers.mcp-cli.env]
+RUST_LOG = "debug"
+"#;
+        let mut doc: DocumentMut = start.parse().unwrap();
+        let changed = upsert_server(&mut doc, Path::new("/new/path"));
+        assert!(changed);
+        let rendered = doc.to_string();
+        assert!(rendered.contains("command = \"/new/path\""));
+        // User's args, cwd, and env block must survive.
+        assert!(
+            rendered.contains("args = [\"--verbose\"]"),
+            "user-set args were clobbered:\n{rendered}"
+        );
+        assert!(rendered.contains("cwd = \"/tmp/work\""));
+        assert!(rendered.contains("RUST_LOG = \"debug\""));
     }
 
     #[test]
