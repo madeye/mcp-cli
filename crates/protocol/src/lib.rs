@@ -42,6 +42,8 @@ pub mod methods {
     pub const FS_SCAN: &str = "fs.scan";
     pub const GIT_STATUS: &str = "git.status";
     pub const SEARCH_GREP: &str = "search.grep";
+    pub const CODE_OUTLINE: &str = "code.outline";
+    pub const CODE_SYMBOLS: &str = "code.symbols";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,4 +171,50 @@ pub struct FsScanResult {
     /// Paths relative to the project root. Honours gitignore; excludes `.git/`.
     pub files: Vec<String>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeOutlineParams {
+    /// Path relative to project root (or absolute inside root).
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeOutlineEntry {
+    /// One of: `function`, `method`, `struct`, `enum`, `class`, `trait`,
+    /// `interface`, `module`, `namespace`, `type`, `constant`, `variable`,
+    /// `macro`, `impl`, `union`, `field`.
+    pub kind: String,
+    pub name: String,
+    /// Byte offset of the start of the declaration node.
+    pub start_byte: u32,
+    /// Byte offset (exclusive) of the end of the declaration node.
+    pub end_byte: u32,
+    /// 1-based line of the start of the declaration.
+    pub start_line: u32,
+    /// 1-based line of the end of the declaration (inclusive).
+    pub end_line: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeOutlineResult {
+    pub path: String,
+    /// Detected language name (e.g. `rust`, `python`). `None` for
+    /// extensions without a registered grammar — `entries` is empty.
+    pub language: Option<String>,
+    pub entries: Vec<CodeOutlineEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeSymbolsParams {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeSymbolsResult {
+    pub path: String,
+    pub language: Option<String>,
+    /// Flat, de-duplicated list of top-level symbol names (function names,
+    /// type names, etc.). For a full structural view, use `code.outline`.
+    pub names: Vec<String>,
 }

@@ -6,11 +6,13 @@ use grep_searcher::SearcherBuilder;
 use ignore::WalkBuilder;
 use memmap2::Mmap;
 use protocol::{
-    FsChangesParams, FsChangesResult, FsReadParams, FsReadResult, FsScanParams, FsScanResult,
-    FsSnapshotResult, GitStatusEntry, GitStatusParams, GitStatusResult, RpcError, SearchGrepParams,
-    SearchGrepResult, SearchHit,
+    CodeOutlineParams, CodeOutlineResult, CodeSymbolsParams, CodeSymbolsResult, FsChangesParams,
+    FsChangesResult, FsReadParams, FsReadResult, FsScanParams, FsScanResult, FsSnapshotResult,
+    GitStatusEntry, GitStatusParams, GitStatusResult, RpcError, SearchGrepParams, SearchGrepResult,
+    SearchHit,
 };
 
+use crate::outline;
 use crate::search_cache::SearchKey;
 use crate::server::{resolve_within, Daemon};
 
@@ -334,4 +336,70 @@ pub fn search_grep(
         .search_cache
         .insert(version, cache_key, result.clone());
     Ok(serde_json::to_value(result).unwrap())
+}
+
+pub fn code_outline(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: CodeOutlineParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let path = resolve_within(&daemon.root, &params.path)?;
+
+    let parsed = daemon
+        .parse_cache
+        .get_or_parse(&path)
+        .map_err(|e| RpcError::new(-32041, format!("parse {}: {e}", path.display())))?;
+    let parsed = match parsed {
+        Some(p) => p,
+        None => {
+            return Ok(serde_json::to_value(CodeOutlineResult {
+                path: params.path,
+                language: None,
+                entries: Vec::new(),
+            })
+            .unwrap());
+        }
+    };
+
+    let entries = outline::outline(&parsed)?;
+    Ok(serde_json::to_value(CodeOutlineResult {
+        path: params.path,
+        language: Some(parsed.language.name().to_string()),
+        entries,
+    })
+    .unwrap())
+}
+
+pub fn code_symbols(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: CodeSymbolsParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let path = resolve_within(&daemon.root, &params.path)?;
+
+    let parsed = daemon
+        .parse_cache
+        .get_or_parse(&path)
+        .map_err(|e| RpcError::new(-32041, format!("parse {}: {e}", path.display())))?;
+    let parsed = match parsed {
+        Some(p) => p,
+        None => {
+            return Ok(serde_json::to_value(CodeSymbolsResult {
+                path: params.path,
+                language: None,
+                names: Vec::new(),
+            })
+            .unwrap());
+        }
+    };
+
+    let names = outline::symbols(&parsed)?;
+    Ok(serde_json::to_value(CodeSymbolsResult {
+        path: params.path,
+        language: Some(parsed.language.name().to_string()),
+        names,
+    })
+    .unwrap())
 }

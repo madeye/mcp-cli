@@ -23,10 +23,13 @@ Concrete, actionable items. Group headers track milestones in
 ## Indexing (M2)
 
 - [x] Pre-warm walker that respects gitignore and pages source files in.
-- [ ] `tree-sitter` integration crate; start with `rust`, `c`, `cpp`, `python`,
-      `typescript`, `go`.
-- [ ] `code.outline` RPC: file -> top-level definitions (`fn`, `struct`,
-      `class`, `def`, etc.) with byte ranges.
+- [x] `tree-sitter` integration; wired for `rust`, `python`, `c`, `cpp`,
+      `typescript` (+ `tsx`), `go` in `crates/daemon/src/languages.rs`.
+- [x] `code.outline` RPC: file -> top-level definitions (`fn`, `struct`,
+      `class`, `def`, etc.) with byte ranges and 1-based line numbers.
+- [x] `code.symbols` RPC: flat, de-duplicated top-level symbol names.
+- [x] `ParseCache` keyed on `(path, mtime_ns, size)`, with proactive
+      eviction from the watcher on change events.
 - [x] LRU for `search.grep` results keyed on `(pattern, glob, version)`.
 
 ## Language backends (M3)
