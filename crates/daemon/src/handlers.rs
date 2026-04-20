@@ -12,7 +12,6 @@ use protocol::{
     SearchHit,
 };
 
-use crate::outline;
 use crate::search_cache::SearchKey;
 use crate::server::{resolve_within, Daemon};
 
@@ -346,26 +345,13 @@ pub fn code_outline(
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let path = resolve_within(&daemon.root, &params.path)?;
 
-    let parsed = daemon
-        .parse_cache
-        .get_or_parse(&path)
-        .map_err(|e| RpcError::new(-32041, format!("parse {}: {e}", path.display())))?;
-    let parsed = match parsed {
-        Some(p) => p,
-        None => {
-            return Ok(serde_json::to_value(CodeOutlineResult {
-                path: params.path,
-                language: None,
-                entries: Vec::new(),
-            })
-            .unwrap());
-        }
+    let (language, entries) = match daemon.backends.outline(&path)? {
+        Some(r) => (Some(r.language.name().to_string()), r.entries),
+        None => (None, Vec::new()),
     };
-
-    let entries = outline::outline(&parsed)?;
     Ok(serde_json::to_value(CodeOutlineResult {
         path: params.path,
-        language: Some(parsed.language.name().to_string()),
+        language,
         entries,
     })
     .unwrap())
@@ -379,26 +365,13 @@ pub fn code_symbols(
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let path = resolve_within(&daemon.root, &params.path)?;
 
-    let parsed = daemon
-        .parse_cache
-        .get_or_parse(&path)
-        .map_err(|e| RpcError::new(-32041, format!("parse {}: {e}", path.display())))?;
-    let parsed = match parsed {
-        Some(p) => p,
-        None => {
-            return Ok(serde_json::to_value(CodeSymbolsResult {
-                path: params.path,
-                language: None,
-                names: Vec::new(),
-            })
-            .unwrap());
-        }
+    let (language, names) = match daemon.backends.symbols(&path)? {
+        Some(r) => (Some(r.language.name().to_string()), r.names),
+        None => (None, Vec::new()),
     };
-
-    let names = outline::symbols(&parsed)?;
     Ok(serde_json::to_value(CodeSymbolsResult {
         path: params.path,
-        language: Some(parsed.language.name().to_string()),
+        language,
         names,
     })
     .unwrap())

@@ -34,7 +34,12 @@ Concrete, actionable items. Group headers track milestones in
 
 ## Language backends (M3)
 
-- [ ] `LanguageBackend` trait + registry.
+- [x] `LanguageBackend` trait + registry. `crates/daemon/src/backends/`
+      defines the trait and `BackendRegistry`; the daemon registers a
+      `TreeSitterBackend` (wrapping the existing `ParseCache` + outline
+      queries) by default. `code.outline` / `code.symbols` handlers
+      dispatch through the registry — specialist backends can be
+      registered ahead of tree-sitter for languages they cover.
 - [ ] Rust backend: spawn `rust-analyzer` once, speak LSP, cache by
       `ChangeLog` version.
 - [ ] C++ backend: spawn `clangd`, parse `compile_commands.json`.

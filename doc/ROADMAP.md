@@ -53,12 +53,17 @@ backends remain.
 ### Language backends
 
 Plug-in shape: a backend is `trait LanguageBackend` with `outline`,
-`definition`, `references`, `diagnostics`. The daemon owns one
-backend instance per language and routes requests.
+`symbols` today and `definition`, `references`, `diagnostics` to come.
+The daemon owns a `BackendRegistry` and routes each request to the
+first registered backend that claims the file's language.
 
+* Trait + registry + tree-sitter backend: **landed**
+  (`crates/daemon/src/backends/`). The handlers no longer touch the
+  `ParseCache` directly — they go through `Daemon::backends`.
 * Rust: shell out (once, long-lived) to `rust-analyzer` over its LSP, cache
-  responses keyed on `ChangeLog` version.
+  responses keyed on `ChangeLog` version. (pending)
 * C++: same pattern with `clangd`, plus auto-discover `compile_commands.json`.
+  (pending)
 * Pure-text languages: tree-sitter only (already landed in M2).
 
 The cost of `rust-analyzer` startup is paid once per project, not once per

@@ -9,6 +9,7 @@ use protocol::{Request, Response, RpcError};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Notify;
 
+use crate::backends::{BackendRegistry, TreeSitterBackend};
 use crate::changelog::ChangeLog;
 use crate::framing::{read_frame, write_frame};
 use crate::handlers;
@@ -21,7 +22,7 @@ pub struct Daemon {
     pub root: PathBuf,
     pub changelog: Arc<ChangeLog>,
     pub search_cache: Arc<SearchCache>,
-    pub parse_cache: Arc<ParseCache>,
+    pub backends: BackendRegistry,
 }
 
 pub struct Config {
@@ -53,11 +54,16 @@ pub async fn serve(cfg: Config) -> Result<()> {
     if cfg.prewarm_enabled {
         prewarm::spawn(cfg.root.clone());
     }
+    // Default backend stack: tree-sitter as the generalist fallback. Future
+    // milestones register specialist backends (rust-analyzer, clangd) ahead
+    // of this so they get first refusal on the languages they cover.
+    let mut backends = BackendRegistry::new();
+    backends.register(Arc::new(TreeSitterBackend::new(parse_cache.clone())));
     let daemon = Arc::new(Daemon {
         root: cfg.root,
         changelog,
         search_cache,
-        parse_cache,
+        backends,
     });
 
     let idle = Arc::new(IdleTracker::new(cfg.idle_timeout));

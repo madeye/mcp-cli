@@ -1,3 +1,4 @@
+mod backends;
 mod changelog;
 mod framing;
 mod handlers;
