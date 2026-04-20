@@ -251,4 +251,6 @@ mounting surfaces, not sequential work.
 
 - [ ] Architecture diagram in `doc/` (currently only ASCII in the README).
 - [ ] `doc/PROTOCOL.md` listing every RPC method, params, result, error codes.
-- [ ] `doc/INTEGRATION.md` with copy-pastable Claude Code / Codex configs.
+- [x] `doc/INTEGRATION.md` with copy-pastable Claude Code / Codex
+      configs, the `--prefer-mcp` recipe, and the full MCP tool
+      surface table.
