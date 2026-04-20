@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{anyhow, Result};
@@ -15,12 +14,11 @@ pub struct DaemonClient {
 }
 
 impl DaemonClient {
-    pub async fn connect(socket: &Path) -> Result<Self> {
-        let stream = UnixStream::connect(socket).await?;
-        Ok(Self {
+    pub fn from_stream(stream: UnixStream) -> Self {
+        Self {
             stream: Mutex::new(stream),
             next_id: AtomicU64::new(1),
-        })
+        }
     }
 
     pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {

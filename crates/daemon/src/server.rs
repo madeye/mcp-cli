@@ -1,9 +1,13 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use parking_lot::Mutex;
 use protocol::{Request, Response, RpcError};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Notify;
 
 use crate::changelog::ChangeLog;
 use crate::framing::{read_frame, write_frame};
@@ -20,57 +24,153 @@ pub struct Daemon {
     pub parse_cache: Arc<ParseCache>,
 }
 
-pub async fn serve(
-    socket: PathBuf,
-    root: PathBuf,
-    changelog_capacity: usize,
-    search_cache_capacity: usize,
-    parse_cache_capacity: usize,
-    prewarm_enabled: bool,
-) -> Result<()> {
-    if socket.exists() {
-        std::fs::remove_file(&socket)
-            .with_context(|| format!("removing stale socket {}", socket.display()))?;
-    }
-    let listener =
-        UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
+pub struct Config {
+    pub socket: PathBuf,
+    pub root: PathBuf,
+    pub changelog_capacity: usize,
+    pub search_cache_capacity: usize,
+    pub parse_cache_capacity: usize,
+    pub prewarm_enabled: bool,
+    pub idle_timeout: Option<Duration>,
+}
 
-    let changelog = Arc::new(ChangeLog::with_capacity(changelog_capacity));
-    let search_cache = Arc::new(SearchCache::new(search_cache_capacity));
-    let parse_cache = Arc::new(ParseCache::new(parse_cache_capacity));
-    let _watch: WatchHandle = watcher::spawn(root.clone(), changelog.clone(), parse_cache.clone())?;
-    if prewarm_enabled {
-        prewarm::spawn(root.clone());
+pub async fn serve(cfg: Config) -> Result<()> {
+    let socket_path = cfg.socket.clone();
+    if socket_path.exists() {
+        std::fs::remove_file(&socket_path)
+            .with_context(|| format!("removing stale socket {}", socket_path.display()))?;
+    }
+    protocol::paths::ensure_socket_parent(&socket_path)
+        .with_context(|| format!("creating socket parent dir for {}", socket_path.display()))?;
+    let listener = UnixListener::bind(&socket_path)
+        .with_context(|| format!("binding {}", socket_path.display()))?;
+
+    let changelog = Arc::new(ChangeLog::with_capacity(cfg.changelog_capacity));
+    let search_cache = Arc::new(SearchCache::new(cfg.search_cache_capacity));
+    let parse_cache = Arc::new(ParseCache::new(cfg.parse_cache_capacity));
+    let _watch: WatchHandle =
+        watcher::spawn(cfg.root.clone(), changelog.clone(), parse_cache.clone())?;
+    if cfg.prewarm_enabled {
+        prewarm::spawn(cfg.root.clone());
     }
     let daemon = Arc::new(Daemon {
-        root,
+        root: cfg.root,
         changelog,
         search_cache,
         parse_cache,
     });
 
-    let shutdown = tokio::signal::ctrl_c();
-    tokio::pin!(shutdown);
+    let idle = Arc::new(IdleTracker::new(cfg.idle_timeout));
+
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    let idle_fired = idle.clone();
+    let idle_signal = async move {
+        if idle_fired.timeout.is_some() {
+            idle_fired.wait_for_timeout().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::pin!(idle_signal);
 
     loop {
         tokio::select! {
             res = listener.accept() => {
                 let (stream, _) = res?;
                 let daemon = daemon.clone();
+                let idle = idle.clone();
+                idle.on_connect();
                 tokio::spawn(async move {
                     if let Err(e) = handle_conn(stream, daemon).await {
                         tracing::warn!(error = %e, "connection ended with error");
                     }
+                    idle.on_disconnect();
                 });
             }
-            _ = &mut shutdown => {
-                tracing::info!("shutting down");
+            _ = &mut ctrl_c => {
+                tracing::info!("shutting down (ctrl-c)");
+                break;
+            }
+            _ = &mut idle_signal => {
+                tracing::info!(
+                    idle_timeout = ?idle.timeout,
+                    "shutting down (idle timeout)",
+                );
                 break;
             }
         }
     }
-    let _ = std::fs::remove_file(&socket);
+    let _ = std::fs::remove_file(&socket_path);
     Ok(())
+}
+
+/// Tracks the moment the last bridge disconnected so a background poll
+/// can shut the daemon down after `timeout` with no activity. The poll
+/// lives inside `wait_for_timeout` so there is exactly one waker, which
+/// is fine for the "quiet, waiting to die" state.
+struct IdleTracker {
+    active: AtomicUsize,
+    last_idle_at: Mutex<Option<Instant>>,
+    timeout: Option<Duration>,
+    tick: Notify,
+}
+
+impl IdleTracker {
+    fn new(timeout: Option<Duration>) -> Self {
+        // Start "idle" — a daemon nobody ever connects to should also
+        // exit after the timeout.
+        Self {
+            active: AtomicUsize::new(0),
+            last_idle_at: Mutex::new(Some(Instant::now())),
+            timeout,
+            tick: Notify::new(),
+        }
+    }
+
+    fn on_connect(&self) {
+        self.active.fetch_add(1, Ordering::SeqCst);
+        *self.last_idle_at.lock() = None;
+        self.tick.notify_waiters();
+    }
+
+    fn on_disconnect(&self) {
+        let prev = self.active.fetch_sub(1, Ordering::SeqCst);
+        if prev == 1 {
+            *self.last_idle_at.lock() = Some(Instant::now());
+            self.tick.notify_waiters();
+        }
+    }
+
+    async fn wait_for_timeout(&self) {
+        let Some(timeout) = self.timeout else {
+            return;
+        };
+        loop {
+            let wait = {
+                let guard = self.last_idle_at.lock();
+                match *guard {
+                    None => None, // connection open; wait for disconnect
+                    Some(since) => {
+                        let elapsed = since.elapsed();
+                        if elapsed >= timeout {
+                            return;
+                        }
+                        Some(timeout - elapsed)
+                    }
+                }
+            };
+            match wait {
+                None => self.tick.notified().await,
+                Some(remaining) => {
+                    tokio::select! {
+                        _ = tokio::time::sleep(remaining) => {}
+                        _ = self.tick.notified() => {}
+                    }
+                }
+            }
+        }
+    }
 }
 
 async fn handle_conn(mut stream: UnixStream, daemon: Arc<Daemon>) -> Result<()> {
@@ -217,5 +317,67 @@ mod tests {
         let (_tmp, root) = setup();
         let err = resolve_within(&root, "does-not-exist").expect_err("nonexistent");
         assert_eq!(err.code, -32001);
+    }
+
+    #[test]
+    fn idle_tracker_none_means_no_wait_target() {
+        let t = IdleTracker::new(None);
+        // last_idle_at is seeded so if we ever call wait_for_timeout it
+        // returns immediately for None (short-circuited).
+        assert!(t.last_idle_at.lock().is_some());
+    }
+
+    #[test]
+    fn idle_tracker_connect_clears_idle_timestamp() {
+        let t = IdleTracker::new(Some(Duration::from_secs(60)));
+        assert!(t.last_idle_at.lock().is_some());
+        t.on_connect();
+        assert!(t.last_idle_at.lock().is_none());
+        assert_eq!(t.active.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn idle_tracker_last_disconnect_sets_timestamp() {
+        let t = IdleTracker::new(Some(Duration::from_secs(60)));
+        t.on_connect();
+        t.on_connect();
+        t.on_disconnect();
+        assert!(t.last_idle_at.lock().is_none()); // one still active
+        t.on_disconnect();
+        assert!(t.last_idle_at.lock().is_some());
+        assert_eq!(t.active.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn idle_tracker_waits_for_timeout() {
+        let t = Arc::new(IdleTracker::new(Some(Duration::from_millis(50))));
+        let t2 = t.clone();
+        let handle = tokio::spawn(async move { t2.wait_for_timeout().await });
+        // The tracker starts already-idle, so the timer should fire
+        // without any connection ever arriving.
+        tokio::time::timeout(Duration::from_millis(500), handle)
+            .await
+            .expect("idle timer fired in time")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_tracker_resets_on_connect() {
+        let t = Arc::new(IdleTracker::new(Some(Duration::from_millis(80))));
+        let t2 = t.clone();
+        let wait = tokio::spawn(async move { t2.wait_for_timeout().await });
+        // Connect before the idle timer fires — it should not complete.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        t.on_connect();
+        let fired_early =
+            tokio::time::timeout(Duration::from_millis(100), async { /* hold */ }).await;
+        assert!(fired_early.is_ok());
+        assert!(!wait.is_finished(), "timer should not have fired yet");
+        // Now disconnect and let it fire.
+        t.on_disconnect();
+        tokio::time::timeout(Duration::from_millis(500), wait)
+            .await
+            .expect("idle timer fired after disconnect")
+            .unwrap();
     }
 }

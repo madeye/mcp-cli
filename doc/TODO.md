@@ -41,34 +41,41 @@ Concrete, actionable items. Group headers track milestones in
 - [ ] Backend health: detect crashes, auto-respawn, surface errors as RPC
       errors instead of dropping the connection.
 
-## Drop-in install + per-cwd auto-spawn (M3)
+## Drop-in install + per-cwd auto-spawn (M3) — done
 
-- [ ] `mcp-cli install` subcommand (probably a new `mcp-cli` wrapper
-      binary alongside `mcp-cli-daemon`/`mcp-cli-bridge`). Flags:
-      `--target claude-code | codex | all` (default `all`).
-    - [ ] Claude Code: shell out to `claude mcp add mcp-cli <path>`;
-          skip if `claude mcp list` already has it. Surface the CLI's
-          exit code on failure.
-    - [ ] Codex: read `~/.codex/config.toml`, merge a
-          `[mcp_servers.mcp-cli]` entry, write back. Preserve
-          user-authored keys; idempotent on re-run.
-    - [ ] Print a diff of what changed in each target's config.
-    - [ ] `--uninstall` inverse (remove the registration).
-- [ ] Bridge: default `--root` to `std::env::current_dir()` when not
-      passed, so the agent's cwd becomes the project root.
-- [ ] Derive per-cwd socket path. Hash the canonicalized cwd; use
-      `$XDG_RUNTIME_DIR/mcp-cli/<hash>.sock` on Linux, fall back to
-      `/tmp/mcp-cli-<user>-<hash>.sock` elsewhere. Mode 0600.
-- [ ] Bridge auto-spawn: on `ENOENT`/`ECONNREFUSED`, fork+exec
+- [x] `mcp-cli install` subcommand lives in a new `crates/mcp-cli`
+      wrapper binary alongside `mcp-cli-daemon`/`mcp-cli-bridge`.
+      Flags: `--target claude-code | codex | all` (default `all`),
+      `--bridge-path`, `--dry-run`.
+    - [x] Claude Code: shells out to `claude mcp add mcp-cli <path>`;
+          skip if `claude mcp list` already has it. Surfaces the CLI's
+          exit code on failure; degrades gracefully when `claude` is
+          not on PATH.
+    - [x] Codex: reads `~/.codex/config.toml`, merges a
+          `[mcp_servers.mcp-cli]` entry via `toml_edit` to preserve
+          user-authored keys, comments, and formatting. Idempotent.
+    - [x] `mcp-cli uninstall` inverse (removes the registration).
+    - [x] `mcp-cli status` reports per-target registration state.
+- [x] Bridge: `--root` defaults to `std::env::current_dir()` when not
+      passed. The agent's cwd becomes the project root.
+- [x] Per-cwd socket path via `protocol::paths::socket_path_for`:
+      `$XDG_RUNTIME_DIR/mcp-cli/<hash>.sock` on Linux,
+      `/tmp/mcp-cli-<user>-<hash>.sock` elsewhere. FNV-1a hash keeps
+      the derivation stable across Rust versions. Parent dir is
+      created mode 0700.
+- [x] Bridge auto-spawn: on `ENOENT`/`ECONNREFUSED`, `fork+exec`
       `mcp-cli-daemon --root <cwd> --socket <derived>`, detach with
-      `setsid`, and retry-connect with ~25ms backoff up to ~2s before
-      erroring. Background stdout/stderr to a per-cwd log under the
-      same directory as the socket.
-- [ ] Daemon `--idle-timeout <duration>` (default 30m; `0` disables).
-      Track last-connected time; exit cleanly when idle elapsed.
-- [ ] End-to-end smoke test: start bridge from a tempdir cwd, issue a
-      `tools/call fs_read`, verify a daemon was spawned with the right
-      `--root`, kill it, confirm the socket is cleaned up.
+      `setsid`, redirect stdout/stderr to a per-socket `.log`, and
+      retry-connect with 25ms→320ms backoff up to 2s.
+- [x] Daemon `--idle-timeout <duration>` (default `30m`; `0` or empty
+      disables). Tracks last-idle timestamp via `IdleTracker`; exits
+      cleanly when the timer elapses with no active bridges.
+- [x] Bridge `--daemon-arg` passthrough (repeatable) lets callers
+      forward flags like `--idle-timeout 5m` to the spawned daemon.
+- [x] End-to-end smoke test (`crates/mcp-bridge/tests/autospawn.rs`):
+      starts the bridge in a tempdir cwd with an isolated
+      `XDG_RUNTIME_DIR`, drives `initialize`, `tools/list`,
+      `tools/call fs_read`, and waits for the daemon to idle-exit.
 
 ## I/O ceiling (M4)
 

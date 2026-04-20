@@ -43,11 +43,12 @@ Goal: make `search.grep` and future semantic queries cheap on cold caches.
   by per-language tree-sitter queries (`languages.rs` / `outline.rs`).
   Supported: rust, python, c, cpp, typescript, tsx, go.
 
-## M3 - Language backends + drop-in install (next)
+## M3 - Language backends + drop-in install (in progress)
 
 Two independent tracks, both landing in M3. The language work makes the
 daemon *smarter*; the install work makes it something a user can actually
-adopt in under 30 seconds.
+adopt in under 30 seconds. The install track has shipped; language
+backends remain.
 
 ### Language backends
 
@@ -63,45 +64,28 @@ backend instance per language and routes requests.
 The cost of `rust-analyzer` startup is paid once per project, not once per
 agent turn — that is the whole point of the daemon.
 
-### Drop-in install + per-project auto-spawn
+### Drop-in install + per-project auto-spawn (done)
 
-Today the daemon + bridge split is correct architecturally but unfriendly:
-a user has to (a) launch `mcp-cli-daemon` with the right `--root`, (b)
-keep it running, and (c) hand-edit each agent's MCP config to register
-the bridge. M3 collapses all three into a single command.
+One-command install + per-project auto-spawn have shipped. New
+`crates/mcp-cli` installer binary, bridge auto-spawn with backoff,
+daemon idle-exit timer. End state already achieved:
 
-**End state.** `mcp-cli install` once, globally. After that, any
-`claude` / `codex` session started from *any* project directory gets a
-warm daemon for that project on demand. No systemd unit, no
-`mcp-cli-daemon &`, no config editing per project.
+    mcp-cli install               # once, globally
+    claude                         # any project → warm daemon on demand
 
-* **One-command registration.** A new `mcp-cli install [--target claude-code|codex|all]`
-  subcommand writes the bridge registration into each agent's native
-  config surface:
-  * Claude Code — shell out to `claude mcp add mcp-cli <path-to-bridge>`
-    (idempotent; `claude mcp list` tells us if it's already there).
-  * Codex — patch `~/.codex/config.toml`'s `[mcp_servers]` table.
-  * Idempotent on both paths; prints a diff of what changed.
-* **Per-cwd socket.** The bridge derives a deterministic socket path
-  from the current working directory (hash of the canonicalized cwd,
-  placed under `$XDG_RUNTIME_DIR` on Linux or `/tmp/mcp-cli-<user>-<hash>.sock`
-  on macOS, mode 0600). Different projects → different sockets → different
-  daemons, with zero user thought.
-* **Bridge auto-spawn.** On first call, if connecting to the derived
-  socket fails with `ENOENT` / `ECONNREFUSED`, the bridge forks and execs
-  `mcp-cli-daemon --root <cwd> --socket <derived>`, detaches, and
-  retry-connects with short backoff (~25 ms up to ~2 s). The agent never
-  sees this — its first `tools/call` just works.
-* **Default `--root = $PWD`.** The bridge picks up the agent's cwd as
-  the project root. Agents spawn stdio MCP servers in the user's working
-  directory, so this gives the right root without any per-project config.
-* **Idle-exit on the daemon.** A `--idle-timeout` flag (default e.g.
-  30 min, `0` disables) makes the daemon exit cleanly when no bridge has
-  been connected for the duration. Pairs with auto-spawn so idle daemons
-  don't linger.
+Details, all implemented:
 
-The MCP config file on both agents ends up with a single line pointing
-at the bridge binary — the bridge handles everything else at runtime.
+* **One-command registration** via `mcp-cli install [--target claude-code|codex|all]`.
+  * Claude Code — shells out to `claude mcp add mcp-cli <bridge>` (idempotent; checks `claude mcp list`).
+  * Codex — `toml_edit` upsert of `[mcp_servers.mcp-cli]` in `~/.codex/config.toml`, preserving user comments.
+  * `uninstall` + `status` subcommands for the inverse and a reporting view. `--dry-run` on both write paths.
+* **Per-cwd socket** in `protocol::paths`: FNV-1a hash of the canonical cwd → `$XDG_RUNTIME_DIR/mcp-cli/<hash>.sock` or `/tmp/mcp-cli-<user>-<hash>.sock`. Parent dir created mode 0700.
+* **Bridge auto-spawn**: on `ENOENT`/`ECONNREFUSED`, fork+exec the daemon, `setsid` to detach, redirect stdio to a per-socket `.log`, retry-connect with 25ms→320ms backoff up to 2s. Daemon binary resolved next to the bridge (then PATH).
+* **Default `--root = $PWD`**: bridge and daemon both default to cwd when `--root` is omitted.
+* **Idle-exit on the daemon**: `--idle-timeout` (default `30m`, `0` disables). Humantime-parsed; tracked via an `IdleTracker` that fires a clean shutdown after the timeout elapses with no active bridges.
+* **Forwarding passthrough**: bridge `--daemon-arg=<flag>` (repeatable) forwards to the spawned daemon, enabling tests and power users to tune the daemon without hand-editing source.
+
+End-to-end smoke test in `crates/mcp-bridge/tests/autospawn.rs` exercises the full path.
 
 ## M4 - I/O ceiling (pending)
 

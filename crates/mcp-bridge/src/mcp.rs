@@ -5,15 +5,26 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
 
 use crate::daemon_client::DaemonClient;
+use crate::spawn::{self, SpawnArgs};
 
-pub async fn run(socket: PathBuf) -> Result<()> {
-    let client = Arc::new(DaemonClient::connect(&socket).await?);
-    tracing::info!(socket = %socket.display(), "bridge connected to daemon");
+pub struct RunConfig {
+    pub socket: PathBuf,
+    pub root: PathBuf,
+    pub daemon_bin: Option<PathBuf>,
+    pub autospawn: bool,
+    pub daemon_extra_args: Vec<String>,
+}
+
+pub async fn run(cfg: RunConfig) -> Result<()> {
+    let stream = connect_with_autospawn(&cfg).await?;
+    tracing::info!(socket = %cfg.socket.display(), "bridge connected to daemon");
+    let client = Arc::new(DaemonClient::from_stream(stream));
 
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
@@ -60,6 +71,27 @@ pub async fn run(socket: PathBuf) -> Result<()> {
         write_message(&mut stdout, &response).await?;
     }
     Ok(())
+}
+
+async fn connect_with_autospawn(cfg: &RunConfig) -> Result<UnixStream> {
+    match UnixStream::connect(&cfg.socket).await {
+        Ok(s) => Ok(s),
+        Err(e) if cfg.autospawn && spawn::is_connect_retryable(&e) => {
+            tracing::info!(
+                socket = %cfg.socket.display(),
+                reason = %e,
+                "daemon unreachable, auto-spawning",
+            );
+            spawn::spawn_and_connect(SpawnArgs {
+                socket: &cfg.socket,
+                root: &cfg.root,
+                daemon_bin: cfg.daemon_bin.as_deref(),
+                extra_args: &cfg.daemon_extra_args,
+            })
+            .await
+        }
+        Err(e) => Err(e).with_context(|| format!("connect {}", cfg.socket.display())),
+    }
 }
 
 async fn write_message<W: AsyncWriteExt + Unpin>(w: &mut W, msg: &Value) -> Result<()> {

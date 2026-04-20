@@ -10,17 +10,20 @@ mod server;
 mod watcher;
 
 use std::path::PathBuf;
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
 #[command(name = "mcp-cli-daemon", about = "Sidecar daemon for MCP-CLI")]
 struct Args {
-    /// Unix domain socket path the daemon listens on.
-    #[arg(long, default_value = "/tmp/mcp-cli.sock")]
-    socket: PathBuf,
+    /// Unix domain socket path the daemon listens on. Defaults to a
+    /// deterministic per-root path so the bridge can find it without
+    /// any configuration.
+    #[arg(long)]
+    socket: Option<PathBuf>,
 
     /// Project root the daemon serves (defaults to current dir).
     #[arg(long)]
@@ -50,6 +53,13 @@ struct Args {
     /// warm-cache behaviour should be controlled explicitly.
     #[arg(long, default_value_t = false)]
     no_prewarm: bool,
+
+    /// Shut down cleanly when no bridge has been connected for this long.
+    /// Accepts human-friendly durations like `30m`, `1h`, `10s`, or `0`
+    /// to disable. Pairs with the bridge's auto-spawn so idle daemons
+    /// don't linger after the agent session ends.
+    #[arg(long, default_value = "30m")]
+    idle_timeout: String,
 }
 
 #[tokio::main]
@@ -67,27 +77,75 @@ async fn main() -> Result<()> {
         None => std::env::current_dir()?,
     };
     let root = root.canonicalize()?;
+    let socket = args
+        .socket
+        .unwrap_or_else(|| protocol::paths::socket_path_for(&root));
 
     if args.changelog_capacity == 0 {
         anyhow::bail!("--changelog-capacity must be > 0");
     }
+    let idle_timeout = parse_idle_timeout(&args.idle_timeout).context("parsing --idle-timeout")?;
 
     tracing::info!(
-        socket = %args.socket.display(),
+        socket = %socket.display(),
         root = %root.display(),
         changelog_capacity = args.changelog_capacity,
         search_cache_capacity = args.search_cache_capacity,
         parse_cache_capacity = args.parse_cache_capacity,
         prewarm = !args.no_prewarm,
+        idle_timeout = ?idle_timeout,
         "starting daemon",
     );
-    server::serve(
-        args.socket,
+    server::serve(server::Config {
+        socket,
         root,
-        args.changelog_capacity,
-        args.search_cache_capacity,
-        args.parse_cache_capacity,
-        !args.no_prewarm,
-    )
+        changelog_capacity: args.changelog_capacity,
+        search_cache_capacity: args.search_cache_capacity,
+        parse_cache_capacity: args.parse_cache_capacity,
+        prewarm_enabled: !args.no_prewarm,
+        idle_timeout,
+    })
     .await
+}
+
+fn parse_idle_timeout(raw: &str) -> Result<Option<Duration>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "0" {
+        return Ok(None);
+    }
+    let d = humantime::parse_duration(trimmed)
+        .with_context(|| format!("invalid duration: {trimmed}"))?;
+    if d.is_zero() {
+        Ok(None)
+    } else {
+        Ok(Some(d))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_disables_idle_timeout() {
+        assert_eq!(parse_idle_timeout("0").unwrap(), None);
+        assert_eq!(parse_idle_timeout("").unwrap(), None);
+    }
+
+    #[test]
+    fn parses_humantime_duration() {
+        assert_eq!(
+            parse_idle_timeout("30m").unwrap(),
+            Some(Duration::from_secs(30 * 60))
+        );
+        assert_eq!(
+            parse_idle_timeout("1h").unwrap(),
+            Some(Duration::from_secs(3600))
+        );
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(parse_idle_timeout("abc").is_err());
+    }
 }
