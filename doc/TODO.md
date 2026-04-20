@@ -143,10 +143,16 @@ install". What remains here is hardening + optional system integration.)
       on its own. Regression test in
       `crates/mcp-bridge/tests/reconnect.rs` kills the daemon
       mid-session and asserts the next call still succeeds.
-- [ ] Multi-bridge contention test: N bridges driving one daemon,
-      verify fair scheduling and no per-bridge starvation.
-- [ ] systemd user-service unit + launchd plist examples for users
-      who prefer an always-on daemon over demand-spawn.
+- [x] Multi-bridge contention test: 4 bridges driving one daemon
+      concurrently, each running 8 fs_read calls.
+      `crates/mcp-bridge/tests/multibridge.rs` asserts no
+      cross-talk (each bridge sees its own file's content), no
+      per-bridge starvation, and that the daemon idle-exits cleanly
+      after all bridges disconnect.
+- [x] systemd user-service unit + launchd plist examples
+      (`doc/services/`) for users who prefer an always-on daemon
+      over demand-spawn. Includes a README explaining when the
+      always-on shape earns its keep.
 
 ## Token-killer compaction layer (M7)
 

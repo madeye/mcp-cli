@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>app.mcp-cli.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/local/bin/mcp-cli-daemon</string>
+      <string>--root</string>
+      <!-- Edit this to point at the project you want served. The
+           bridge will find the socket as long as the agent's CWD
+           canonicalises to the same path. -->
+      <string>/Users/YOU/projects/your-project</string>
+      <string>--idle-timeout</string>
+      <string>0</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Backoff between respawns; without this launchd's default
+         throttle (10 s) is fine but explicit is better. -->
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOU/Library/Logs/mcp-cli-daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOU/Library/Logs/mcp-cli-daemon.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>RUST_LOG</key>
+      <string>info</string>
+    </dict>
+  </dict>
+</plist>

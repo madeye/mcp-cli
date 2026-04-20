@@ -1,0 +1,39 @@
+[Unit]
+Description=mcp-cli sidecar daemon (always-on, single project)
+Documentation=https://github.com/madeye/mcp-cli
+# Wait for the user's runtime dir so the per-cwd socket can land
+# under $XDG_RUNTIME_DIR/mcp-cli/.
+After=default.target
+
+[Service]
+Type=simple
+# Edit this to point at the project you want served. The daemon
+# derives its socket path from this root via FNV-1a, so the bridge
+# will find it as long as the agent's CWD canonicalises to the
+# same path.
+Environment=MCP_CLI_ROOT=%h/projects/your-project
+# `--idle-timeout 0` disables the auto-exit timer; this unit owns
+# the daemon's lifecycle from here on.
+ExecStart=/usr/local/bin/mcp-cli-daemon \
+    --root ${MCP_CLI_ROOT} \
+    --idle-timeout 0
+
+# The daemon owns mmap'd files and a notify-rs watcher; SIGTERM
+# triggers its clean shutdown path (unlinks the socket, drops the
+# watcher, exits 0). SIGKILL after 10s if it ever hangs.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+Restart=on-failure
+RestartSec=5s
+
+# Hardening — the daemon doesn't need much.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+# Allow writes only into the project root and the runtime dir.
+ReadWritePaths=${MCP_CLI_ROOT} %t/mcp-cli
+
+[Install]
+WantedBy=default.target
