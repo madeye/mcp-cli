@@ -148,6 +148,46 @@ install". What remains here is hardening + optional system integration.)
 - [ ] systemd user-service unit + launchd plist examples for users
       who prefer an always-on daemon over demand-spawn.
 
+## Token-killer compaction layer (M7)
+
+Inspired by [`rtk`](https://github.com/rtk-ai/rtk). Goal: shrink
+tool-output bytes 60–90 % so the agent burns less context per call.
+
+- [ ] `crates/daemon/src/compact/` module with the four primitives
+      (`filter`, `group`, `truncate`, `dedupe`) as composable functions
+      over `&str` / `Vec<Hit>` / `Vec<DiagnosticEntry>`. Cover with
+      table-driven unit tests so each tool wrapper can lean on them.
+- [ ] `git.status` compact mode: group by status class, per-directory
+      counts, drop `clean`/`ignored`. `?compact: bool` param, default
+      on once parity tested.
+- [ ] `search.grep` compact mode: bucket by file with match count +
+      first/last line numbers; full-detail mode behind explicit flag.
+- [ ] `code.outline` `signatures-only` formatter (rtk
+      `read --aggressive` equivalent) reusing the existing tree-sitter
+      parse cache.
+- [ ] `fs.read` `?strip-noise` flag for license headers, long base64
+      blobs, generated-file markers.
+- [ ] New `tool.run` family (one MCP method per wrapped tool, dispatched
+      to a `ToolBackend` trait that mirrors `LanguageBackend`):
+    - [ ] `tool.cargo_test`, `tool.cargo_clippy`, `tool.cargo_build`
+          consuming `--message-format=json`. Failures + warnings only.
+    - [ ] `tool.test_runner` adapter — `pytest --json-report`,
+          `jest --json`, `go test -json`, `vitest --reporter=json`.
+    - [ ] `tool.lint` adapter — `eslint --format json`,
+          `tsc --pretty false`, `ruff check --output-format=json`,
+          `golangci-lint run --out-format json`.
+    - [ ] `tool.gh` adapter for `pr list`, `pr view`, `issue list`,
+          `run list` (via `gh ... --json ...`).
+- [ ] Per-`(command, cwd, file-mtime-fingerprint)` LRU cache so a
+      re-run with no source changes returns the cached structured
+      result, the same way `search.grep` caches by ChangeLog version.
+- [ ] `metrics.gain` RPC: per-tool counters of (raw_bytes,
+      compacted_bytes, calls). Backed by atomics on the daemon side;
+      cheap to keep and read.
+- [ ] Bridge tool definitions for the new MCP surface, plus
+      `doc/INTEGRATION.md` snippets showing the agent which tool to
+      prefer over raw `Bash(...)` for each common workflow.
+
 ## Integration strategies (parallel tracks)
 
 Tracked separately from the MCP milestones — these are alternative

@@ -190,6 +190,102 @@ contention and optional system-integration surface.
 * Optional systemd / launchd unit files for users who prefer an always-on
   daemon over demand-spawn.
 
+## M7 - Token-killer compaction layer (pending)
+
+Inspired by [`rtk`](https://github.com/rtk-ai/rtk) — every byte the
+agent sees costs context window. Today's daemon already wins by
+keeping state hot; M7 wins by *shrinking the responses themselves*
+before they cross the bridge. rtk reports 60–90 % savings on a
+typical agent session by filtering, grouping, truncating, and
+deduplicating tool output. We can do the same — and better, because
+we already own the structured form (libgit2 statuses, ripgrep hits,
+tree-sitter outlines) and don't have to re-parse formatted text.
+
+Where rtk works as a Bash-hook proxy that rewrites shell commands,
+mcp-cli's surface is MCP tool calls. Same compression strategies,
+different mounting point: we expose new MCP tools (and tighter
+formatters on existing ones) so an agent that prefers `grep_compact`
+over raw `Bash("rg ...")` gets a token-budget win for free.
+
+### Compaction primitives
+
+A `Compact` trait in `crates/daemon/src/compact/` codifies rtk's four
+strategies so individual tool handlers compose them rather than each
+inventing their own format:
+
+* `filter` — drop boilerplate (whitespace, banner lines, ASCII art,
+  progress bars, license headers).
+* `group` — fold many similar items into one bucket (search hits by
+  file/dir, lint errors by rule, dependency tree by top-level module).
+* `truncate` — keep head + tail with a "… N more" marker; never the
+  raw middle that the agent will just discard.
+* `dedupe` — collapse repeated lines with a count prefix, the way
+  `uniq -c` would.
+
+### Tighter formatters on existing tools
+
+Existing handlers should grow a `?compact: bool` (or default-on)
+mode that emits the rtk-style summary instead of the raw structure.
+First targets:
+
+* `git.status` — group by status class, show counts per directory,
+  drop ignored/clean entries entirely. Today's per-file dump is the
+  pre-rtk baseline.
+* `search.grep` — bucket hits by file (one line per file with a
+  match count + first / last line numbers), full-detail mode behind
+  an explicit flag for when the agent really needs every line.
+* `code.outline` — already structurally compact; add a `signatures-only`
+  formatter (rtk `read --aggressive` equivalent) that pairs with
+  `fs.read` for the "show me this file but not the bodies" workflow.
+* `fs.read` — auto-strip noise for known formats (license headers,
+  long base64 blobs, generated files) behind a `?strip-noise: bool`.
+
+### New external-command wrappers
+
+The big rtk wins are on commands the daemon doesn't own today: test
+runners, linters, builders. M6 adds a `tool.run` family that shells
+out (once, not per-call) to the underlying tool, parses its
+structured output, and returns the compacted view:
+
+* `tool.cargo_test`, `tool.cargo_clippy`, `tool.cargo_build` —
+  consume cargo's JSON output (`--message-format=json`), surface
+  failures + warnings only.
+* `tool.test_runner` — generic adapter for `pytest --json-report`,
+  `jest --json`, `go test -json`, `vitest --reporter=json`. Failures
+  + summary counts, never the passing-test noise.
+* `tool.lint` — `eslint --format json`, `tsc --pretty false`,
+  `ruff check --output-format=json`, `golangci-lint run --out-format json`.
+  Group by file → rule → line so the agent gets a histogram, not a
+  log dump.
+* `tool.gh` — bridge GitHub CLI for `pr list`, `pr view`, `issue list`,
+  `run list`. Parses the JSON, drops avatar URLs / timestamps the
+  agent doesn't need.
+
+External commands stream into the daemon, so the bridge sees the
+compacted form only — and the daemon can cache the parsed form keyed
+on `(command, cwd, file-mtime-fingerprint)` the same way `search.grep`
+caches by ChangeLog version.
+
+### Token-savings telemetry
+
+A `metrics.gain` RPC mirrors `rtk gain`: per-tool counters of raw
+output bytes (what the underlying command would have sent) vs.
+compacted bytes (what we actually serialized). Cheap to maintain
+(two atomics per tool), surfaces to the user how much context budget
+the daemon is buying back.
+
+### Why this is the right fit for mcp-cli (and not just "shell out to rtk")
+
+* We already own the structured form for the highest-frequency tools
+  (`fs.read`, `search.grep`, `git.status`, `code.outline`). Compacting
+  in-process is cheaper and more correct than re-parsing formatted text.
+* `tool.run` shares the daemon's parse / file-watch / cache layers,
+  so a `cargo test` whose dependency graph hasn't changed can return
+  the cached structured failure list without re-running.
+* The compaction layer is symmetric with the M3 backend layer:
+  `LanguageBackend` plugs in deeper semantics; `Compact` plugs in
+  tighter output. Both keep the RPC surface stable.
+
 ## Integration strategies
 
 Three ways to wire this daemon into an agent, in increasing order of
