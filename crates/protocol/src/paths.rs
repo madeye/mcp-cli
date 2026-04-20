@@ -99,12 +99,19 @@ mod tests {
 
     #[test]
     fn same_path_same_socket() {
+        // socket_path_for reads XDG_RUNTIME_DIR; the env-mutating
+        // tests below hold ENV_LOCK while they flip it, so we have
+        // to hold it here too — otherwise a parallel test run sees
+        // a stale env mid-call and the two `socket_path_for(p)`
+        // results disagree (was a long-standing CI flake).
+        let _g = ENV_LOCK.lock().unwrap();
         let p = Path::new("/home/alice/projects/foo");
         assert_eq!(socket_path_for(p), socket_path_for(p));
     }
 
     #[test]
     fn different_paths_different_sockets() {
+        let _g = ENV_LOCK.lock().unwrap();
         let a = socket_path_for(Path::new("/home/alice/projects/foo"));
         let b = socket_path_for(Path::new("/home/alice/projects/bar"));
         assert_ne!(a, b);
