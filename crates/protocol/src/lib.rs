@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub mod paths;
+
 pub const PROTOCOL_VERSION: &str = "0.1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

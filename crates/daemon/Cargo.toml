@@ -33,6 +33,7 @@ tree-sitter-c.workspace = true
 tree-sitter-cpp.workspace = true
 tree-sitter-typescript.workspace = true
 tree-sitter-go.workspace = true
+humantime.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
