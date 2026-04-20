@@ -151,6 +151,36 @@ log "installing mcp-cli into CODEX_HOME=$MCP_HOME"
 CODEX_HOME="$MCP_HOME" "$MCP_CLI" install --target codex >/dev/null
 run_traced mcp "$MCP_HOME"
 
+# Snapshot daemon-side latency counters before the daemon idle-exits.
+# Best-effort: if codex left the bridge running, this hits a live
+# daemon and pulls per-tool counters; if the daemon already shut down
+# it just times out and we skip the section in compare.py.
+DUMP_FILE="$OUT_DIR/mcp.metrics.tool_latency.json"
+log "dumping daemon metrics.tool_latency to $DUMP_FILE"
+LATENCY_REQ='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"metrics_tool_latency","arguments":{}}}'
+if echo "$LATENCY_REQ" | timeout 5 "$(dirname "$MCP_CLI")/mcp-cli-bridge" \
+    --root "$SRC" \
+    --no-autospawn 2>/dev/null \
+    | python3 -c '
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        continue
+    text = (msg.get("result") or {}).get("content", [{}])[0].get("text")
+    if text:
+        print(text)
+        break
+' >"$DUMP_FILE" 2>/dev/null; then
+    [[ -s "$DUMP_FILE" ]] || rm -f "$DUMP_FILE"
+else
+    rm -f "$DUMP_FILE"
+fi
+
 # Compare ---------------------------------------------------------
 log "computing comparison"
 python3 "$HERE/compare.py" \

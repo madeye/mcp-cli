@@ -244,7 +244,14 @@ async fn handle_conn(mut stream: UnixStream, daemon: Arc<Daemon>) -> Result<()> 
 
 async fn dispatch(daemon: &Daemon, req: Request) -> Response {
     let id = req.id;
-    let result = match req.method.as_str() {
+    let method = req.method.clone();
+    // Time every dispatch (including errors and unknown methods) so a
+    // sudden latency spike on a misbehaving client shows up too. The
+    // metrics RPCs themselves get instrumented — there's no recursion
+    // hazard since `record_latency` doesn't touch the dispatch path.
+    let start = std::time::Instant::now();
+
+    let result = match method.as_str() {
         protocol::methods::PING => {
             Ok(serde_json::json!({"ok": true, "version": protocol::PROTOCOL_VERSION}))
         }
@@ -257,8 +264,15 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
         protocol::methods::CODE_OUTLINE => handlers::code_outline(daemon, req.params),
         protocol::methods::CODE_SYMBOLS => handlers::code_symbols(daemon, req.params),
         protocol::methods::METRICS_GAIN => handlers::metrics_gain(daemon, req.params),
+        protocol::methods::METRICS_TOOL_LATENCY => {
+            handlers::metrics_tool_latency(daemon, req.params)
+        }
         other => Err(RpcError::new(-32601, format!("unknown method: {other}"))),
     };
+
+    let elapsed_us = start.elapsed().as_micros() as u64;
+    daemon.metrics.record_latency(&method, elapsed_us);
+
     match result {
         Ok(value) => Response {
             id,

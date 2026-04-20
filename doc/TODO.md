@@ -122,9 +122,15 @@ kernel overhead. Lives under `bench/codex-forkexec/`.
 - [ ] `bench/codex-forkexec/compare.py`: tabulate baseline vs
       with-mcp counts (overall + per-binary delta) and absolute
       wall-clock + token deltas.
-- [ ] Per-tool daemon-side latency counters (`metrics.tool_latency`)
-      so the benchmark can also assert no per-call regression — a
-      fork/exec saved that costs the same wall-clock isn't a win.
+- [x] Per-tool daemon-side latency counters via the M7 metrics module
+      (`crates/daemon/src/metrics.rs`). New `metrics.tool_latency` RPC
+      + bridge tool `metrics_tool_latency` returns calls / sum / mean /
+      max microseconds per dispatched method. `dispatch` records the
+      elapsed wall-clock for every call (success or error), so latency
+      tracking is automatic with no per-handler instrumentation.
+      Bench `run.sh` snapshots the counters into
+      `mcp.metrics.tool_latency.json` after the with-mcp run and
+      `compare.py` renders a per-tool latency table when present.
 - [ ] CI job (manual / weekly) that runs the benchmark on a
       controlled runner with Codex pre-installed and posts the
       comparison table as a PR comment.

@@ -165,9 +165,40 @@ def main() -> int:
     print(row("wall clock (s)", baseline_wall, mcp_wall))
     print(row("input tokens", baseline_tokens.get("input"), mcp_tokens.get("input")))
     print(row("output tokens", baseline_tokens.get("output"), mcp_tokens.get("output")))
+
+    # Daemon-side per-tool latency, written by run.sh after the with-mcp
+    # run via `metrics.tool_latency`. Only the with-mcp run has a daemon
+    # to query, so we just print the single column.
+    latency = parse_latency_dump(out / "mcp.metrics.tool_latency.json")
+    if latency:
+        print()
+        print("daemon-side per-tool latency (with mcp-cli)")
+        print("-" * 74)
+        print(f"{'tool':<30}{'calls':>10}{'mean us':>14}{'max us':>14}")
+        for entry in latency:
+            print(
+                f"{entry['tool']:<30}{entry['calls']:>10}{entry['mean_us']:>14}{entry['max_us']:>14}"
+            )
+
     print()
     print(f"Raw artifacts: {out}")
     return 0
+
+
+def parse_latency_dump(path: Path) -> list[dict]:
+    """Read the metrics.tool_latency JSON dump if present.
+
+    Returns the per_tool array sorted by latency_sum_us desc (the
+    daemon already sorts this way; we don't re-sort). Missing or
+    malformed file → empty list.
+    """
+    if not path.exists():
+        return []
+    try:
+        import json
+        return list(json.loads(path.read_text()).get("per_tool") or [])
+    except (OSError, ValueError):
+        return []
 
 
 if __name__ == "__main__":
