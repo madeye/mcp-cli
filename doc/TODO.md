@@ -99,9 +99,12 @@ Concrete, actionable items. Group headers track milestones in
 (Auto-spawn + per-cwd socket routing moved to M3 under "Drop-in
 install". What remains here is hardening + optional system integration.)
 
-- [ ] Bridge: detect daemon-dead mid-session, retry-connect with backoff,
-      fall through to the M3 auto-spawn path on `ECONNREFUSED` rather
-      than failing the call.
+- [x] Bridge: detect daemon-dead mid-session, drop the stale stream,
+      fall through to the M3 auto-spawn path, retry the call once.
+      `DaemonClient` now owns its `ConnectConfig` so it can reconnect
+      on its own. Regression test in
+      `crates/mcp-bridge/tests/reconnect.rs` kills the daemon
+      mid-session and asserts the next call still succeeds.
 - [ ] Multi-bridge contention test: N bridges driving one daemon,
       verify fair scheduling and no per-bridge starvation.
 - [ ] systemd user-service unit + launchd plist examples for users
