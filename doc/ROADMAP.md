@@ -125,9 +125,12 @@ contention and optional system-integration surface.
 
 * Multiple MCP bridges connected to one daemon (already supported by the
   per-connection task; needs explicit testing under contention).
-* Health check + reconnect: if the daemon went away mid-session, the
-  bridge should retry-connect and, on `ECONNREFUSED`, fall through to the
-  same M3 auto-spawn path instead of failing the call.
+* Health check + reconnect: **landed**. `DaemonClient` owns its
+  connect config and detects transport-layer failures
+  (`BrokenPipe` / `UnexpectedEof` / `ConnectionRefused` / `NotFound`
+  / friends). On a dead-stream error mid-call it drops the stream,
+  reconnects via the same M3 auto-spawn path, and retries the call
+  once before surfacing the error.
 * Optional systemd / launchd unit files for users who prefer an always-on
   daemon over demand-spawn.
 
