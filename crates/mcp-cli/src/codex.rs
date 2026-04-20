@@ -121,6 +121,13 @@ pub fn status() -> Result<()> {
 }
 
 fn config_path() -> Result<PathBuf> {
+    // Honour `$CODEX_HOME` so per-session installs (the M5 bench, CI
+    // runners, anyone testing in isolation) write to the right
+    // config.toml. Falls back to `$HOME/.codex/` for the normal
+    // user-install case.
+    if let Some(codex_home) = std::env::var_os("CODEX_HOME") {
+        return Ok(PathBuf::from(codex_home).join("config.toml"));
+    }
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .context("HOME is not set")?;

@@ -7,13 +7,19 @@ milestone (M3 backends, M4 I/O ceiling, M7 compaction) is a
 no-op if the agent never actually stops shelling out — so we
 measure that directly.
 
-> **Headline finding from the first real run** ([results/2026-04-20-rust-v0.121.0.md](./results/2026-04-20-rust-v0.121.0.md)):
-> codex did **not** route any work through `mcp-cli`'s MCP tools.
-> Per-binary fork/exec deltas were within model-variance noise
-> (-5 over 93 calls); the only `mcp_tool_call` events that fired
-> were codex's own startup discovery (`list_mcp_resources`).
-> Closing this gap needs either a codex-side preference rule or a
-> Bash-rewriting hook (rtk-style) — neither lives in mcp-cli today.
+> **Headline (after `--prefer-mcp` landed)** —
+> [results/2026-04-20-rust-v0.121.0-prefer-mcp.md](./results/2026-04-20-rust-v0.121.0-prefer-mcp.md):
+> **fork/exec drops 79 %** (103 → 22, every `rg` and `sed` gone),
+> **input tokens drop 19 %**, and codex actually called the daemon
+> 124 times (`fs_read` ×50, `search_grep` ×70, `fs_scan` ×4).
+> Wall-clock regressed 45 % because each MCP call is atomic — codex
+> needed ~2.7× more turns than the bash-pipeline baseline; closing
+> that needs compound / batch MCP tools, not a daemon perf fix.
+>
+> v1 result (no `--prefer-mcp`,
+> [results/2026-04-20-rust-v0.121.0.md](./results/2026-04-20-rust-v0.121.0.md))
+> is left in place as the negative control: codex ignored the
+> daemon entirely until the new install flag landed.
 
 ## What it does
 

@@ -279,7 +279,12 @@ run_one baseline "$BASELINE_HOME"
 MCP_HOME="$OUT_DIR/codex-home-mcp"
 bootstrap_codex_home "$MCP_HOME"
 log "installing mcp-cli into CODEX_HOME=$MCP_HOME"
-CODEX_HOME="$MCP_HOME" "$MCP_CLI" install --target codex >/dev/null
+# --prefer-mcp disables codex's built-in shell tool and
+# auto-approves the mcp-cli MCP tools so codex actually routes
+# through the daemon instead of forking bash. Without this, the
+# benchmark measures model variance — codex ignores the MCP
+# server entirely (the M5 v1 result demonstrated exactly that).
+CODEX_HOME="$MCP_HOME" "$MCP_CLI" install --target codex --prefer-mcp >/dev/null
 run_one mcp "$MCP_HOME"
 
 # Snapshot daemon-side latency counters before the daemon idle-exits.
