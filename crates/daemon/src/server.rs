@@ -25,6 +25,14 @@ use crate::watcher::{self, WatchHandle};
 /// near-`MAX_FRAME` request can't bloat the pool's resident memory.
 const FRAME_BUFFER_RECYCLE_CAP: usize = 256 * 1024;
 
+// Compile-time guard: a recycle cap at or above MAX_FRAME would let the
+// pool keep arbitrarily large buffers, defeating the cap. Both values
+// are `const`s, so a release build can't ship with this misconfigured.
+const _: () = assert!(
+    FRAME_BUFFER_RECYCLE_CAP < MAX_FRAME as usize,
+    "FRAME_BUFFER_RECYCLE_CAP must stay below MAX_FRAME or the cap is meaningless",
+);
+
 pub struct Daemon {
     pub root: PathBuf,
     pub changelog: Arc<ChangeLog>,
@@ -195,19 +203,22 @@ impl IdleTracker {
 async fn handle_conn(mut stream: UnixStream, daemon: Arc<Daemon>) -> Result<()> {
     let (read_half, mut write_half) = stream.split();
     let mut reader = tokio::io::BufReader::new(read_half);
-    // Sanity: the recycle cap is meaningful only if it's well below the
-    // hard frame limit, otherwise the pool would keep oversize buffers
-    // anyway. Asserted at startup of every connection (cheap) instead of
-    // a const_assert! because MAX_FRAME is a runtime u32.
-    debug_assert!(FRAME_BUFFER_RECYCLE_CAP < MAX_FRAME as usize);
 
     loop {
-        let mut frame = daemon.frame_pool.acquire();
-        if read_frame_into(&mut reader, &mut frame).await?.is_none() {
-            return Ok(());
-        }
+        // Read + deserialize inside an inner scope so the pooled frame
+        // buffer is returned to the pool before we spend any time
+        // serializing a response (success *or* error path). That keeps
+        // a concurrent connection from waiting on our write to recycle
+        // its next read buffer.
+        let parsed: Result<Request, serde_json::Error> = {
+            let mut frame = daemon.frame_pool.acquire();
+            match read_frame_into(&mut reader, &mut frame).await? {
+                None => return Ok(()),
+                Some(()) => serde_json::from_slice(&frame),
+            }
+        };
 
-        let req: Request = match serde_json::from_slice(&frame) {
+        let req = match parsed {
             Ok(r) => r,
             Err(e) => {
                 let resp = Response {
@@ -220,11 +231,6 @@ async fn handle_conn(mut stream: UnixStream, daemon: Arc<Daemon>) -> Result<()> 
                 continue;
             }
         };
-
-        // Drop the frame buffer back into the pool before dispatch so
-        // the next concurrent connection on this daemon can pick it up
-        // without waiting for our response to serialize.
-        drop(frame);
 
         let resp = dispatch(&daemon, req).await;
         let payload = serde_json::to_vec(&resp)?;
