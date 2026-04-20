@@ -8,6 +8,7 @@ use tokio::net::{UnixListener, UnixStream};
 use crate::changelog::ChangeLog;
 use crate::framing::{read_frame, write_frame};
 use crate::handlers;
+use crate::parse_cache::ParseCache;
 use crate::prewarm;
 use crate::search_cache::SearchCache;
 use crate::watcher::{self, WatchHandle};
@@ -16,6 +17,7 @@ pub struct Daemon {
     pub root: PathBuf,
     pub changelog: Arc<ChangeLog>,
     pub search_cache: Arc<SearchCache>,
+    pub parse_cache: Arc<ParseCache>,
 }
 
 pub async fn serve(
@@ -23,6 +25,7 @@ pub async fn serve(
     root: PathBuf,
     changelog_capacity: usize,
     search_cache_capacity: usize,
+    parse_cache_capacity: usize,
     prewarm_enabled: bool,
 ) -> Result<()> {
     if socket.exists() {
@@ -34,7 +37,8 @@ pub async fn serve(
 
     let changelog = Arc::new(ChangeLog::with_capacity(changelog_capacity));
     let search_cache = Arc::new(SearchCache::new(search_cache_capacity));
-    let _watch: WatchHandle = watcher::spawn(root.clone(), changelog.clone())?;
+    let parse_cache = Arc::new(ParseCache::new(parse_cache_capacity));
+    let _watch: WatchHandle = watcher::spawn(root.clone(), changelog.clone(), parse_cache.clone())?;
     if prewarm_enabled {
         prewarm::spawn(root.clone());
     }
@@ -42,6 +46,7 @@ pub async fn serve(
         root,
         changelog,
         search_cache,
+        parse_cache,
     });
 
     let shutdown = tokio::signal::ctrl_c();
@@ -106,6 +111,8 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
         protocol::methods::FS_SCAN => handlers::fs_scan(daemon, req.params),
         protocol::methods::GIT_STATUS => handlers::git_status(daemon, req.params),
         protocol::methods::SEARCH_GREP => handlers::search_grep(daemon, req.params),
+        protocol::methods::CODE_OUTLINE => handlers::code_outline(daemon, req.params),
+        protocol::methods::CODE_SYMBOLS => handlers::code_symbols(daemon, req.params),
         other => Err(RpcError::new(-32601, format!("unknown method: {other}"))),
     };
     match result {

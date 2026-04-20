@@ -98,6 +98,8 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
         "fs_scan" => protocol::methods::FS_SCAN,
         "git_status" => protocol::methods::GIT_STATUS,
         "search_grep" => protocol::methods::SEARCH_GREP,
+        "code_outline" => protocol::methods::CODE_OUTLINE,
+        "code_symbols" => protocol::methods::CODE_SYMBOLS,
         other => return Err(anyhow::anyhow!("unknown tool: {other}")),
     };
 
@@ -174,6 +176,28 @@ fn tool_definitions() -> Value {
                     "case_insensitive": {"type": "boolean", "default": false}
                 },
                 "required": ["pattern"]
+            }
+        },
+        {
+            "name": "code_outline",
+            "description": "Return the structural outline (top-level functions, types, classes, etc.) of a single source file via tree-sitter. Results are cached per file, invalidated by mtime + size. Supports rust, python, c, cpp, typescript, tsx, go. Unsupported extensions return an empty `entries` list with `language: null`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path relative to project root."}
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "code_symbols",
+            "description": "Return a flat, de-duplicated list of top-level symbol names in a source file (function names, type names, etc.). Cheaper than code_outline when only names are needed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path relative to project root."}
+                },
+                "required": ["path"]
             }
         }
     ])

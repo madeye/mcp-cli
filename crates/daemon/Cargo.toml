@@ -25,6 +25,14 @@ grep-regex.workspace = true
 ignore.workspace = true
 notify.workspace = true
 parking_lot.workspace = true
+streaming-iterator.workspace = true
+tree-sitter.workspace = true
+tree-sitter-rust.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-c.workspace = true
+tree-sitter-cpp.workspace = true
+tree-sitter-typescript.workspace = true
+tree-sitter-go.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

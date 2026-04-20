@@ -30,5 +30,13 @@ walkdir = "2"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 parking_lot = "0.12"
 tempfile = "3"
+streaming-iterator = "0.1"
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.23"
+tree-sitter-c = "0.23"
+tree-sitter-cpp = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.23"
 
 protocol = { path = "crates/protocol" }

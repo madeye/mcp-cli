@@ -27,19 +27,23 @@ closer to zero without giving up correctness?
   per-path coalesced events. `overflowed: true` when the client fell behind.
 * Gitignore-aware filter, hard exclusion of `.git/`.
 
-## M2 - Indexing (in progress)
+## M2 - Indexing (done)
 
 Goal: make `search.grep` and future semantic queries cheap on cold caches.
 
 * [x] Background pre-warm: walk the tree at startup, prime the page cache
-  for source files (`prewarm.rs`). Path → blob-hash table still TODO.
+  for source files (`prewarm.rs`). Path → blob-hash table still TODO
+  (deferred; LRU + tree-sitter cover the query-latency case for now).
 * [x] Result deduplication LRU for `search.grep`, keyed on query and
   invalidated on `ChangeLog` version bump (`search_cache.rs`).
-* [ ] Tree-sitter parse cache. Parse on first request per file, evict on
-  `fs.changes`. Expose `code.outline` (top-level defs) and `code.symbols`
-  (named identifiers) as MCP tools.
+* [x] Tree-sitter parse cache (`parse_cache.rs`). Per-file cache keyed
+  on path and validated by `(mtime_ns, size)`; the watcher also
+  evicts on change events to release memory proactively.
+* [x] `code.outline` + `code.symbols` RPCs exposed as MCP tools, backed
+  by per-language tree-sitter queries (`languages.rs` / `outline.rs`).
+  Supported: rust, python, c, cpp, typescript, tsx, go.
 
-## M3 - Language backends (pending)
+## M3 - Language backends (next)
 
 Plug-in shape: a backend is `trait LanguageBackend` with `outline`,
 `definition`, `references`, `diagnostics`. The daemon owns one

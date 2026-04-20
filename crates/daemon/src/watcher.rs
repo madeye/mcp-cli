@@ -14,18 +14,23 @@ use protocol::ChangeKind;
 use std::collections::HashMap;
 
 use crate::changelog::ChangeLog;
+use crate::parse_cache::ParseCache;
 
 pub struct WatchHandle {
     _watcher: RecommendedWatcher,
 }
 
-pub fn spawn(root: PathBuf, log: Arc<ChangeLog>) -> Result<WatchHandle> {
+pub fn spawn(
+    root: PathBuf,
+    log: Arc<ChangeLog>,
+    parse_cache: Arc<ParseCache>,
+) -> Result<WatchHandle> {
     let filter = Arc::new(Filter::new(root.clone()));
     let filter_for_watch = filter.clone();
 
     let mut watcher = RecommendedWatcher::new(
         move |res: notify::Result<Event>| match res {
-            Ok(event) => handle_event(event, &filter_for_watch, &log),
+            Ok(event) => handle_event(event, &filter_for_watch, &log, &parse_cache),
             Err(e) => tracing::warn!(error = %e, "watch error"),
         },
         Config::default().with_poll_interval(Duration::from_secs(2)),
@@ -125,7 +130,7 @@ impl Filter {
     }
 }
 
-fn handle_event(event: Event, filter: &Filter, log: &ChangeLog) {
+fn handle_event(event: Event, filter: &Filter, log: &ChangeLog, parse_cache: &ParseCache) {
     let kinds: Vec<(usize, ChangeKind)> = match event.kind {
         EventKind::Create(_) => event
             .paths
@@ -200,6 +205,10 @@ fn handle_event(event: Event, filter: &Filter, log: &ChangeLog) {
         if rel.is_empty() {
             continue;
         }
+        // The parse cache is authoritative via mtime, but evicting
+        // proactively releases memory earlier for files that won't be
+        // re-queried, and avoids a stat on the next call.
+        parse_cache.evict(path);
         log.record(rel, kind);
     }
 }

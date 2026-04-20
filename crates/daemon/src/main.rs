@@ -1,6 +1,9 @@
 mod changelog;
 mod framing;
 mod handlers;
+mod languages;
+mod outline;
+mod parse_cache;
 mod prewarm;
 mod search_cache;
 mod server;
@@ -33,6 +36,13 @@ struct Args {
     /// repeat queries within a single quiescent window. Set to 0 to disable.
     #[arg(long, default_value_t = 64)]
     search_cache_capacity: usize,
+
+    /// Capacity (in files) of the per-file tree-sitter parse cache used by
+    /// `code.outline` / `code.symbols`. Entries are validated by mtime +
+    /// size on every access. Set to 0 to disable caching (each call
+    /// re-parses from disk).
+    #[arg(long, default_value_t = 256)]
+    parse_cache_capacity: usize,
 
     /// Skip the startup pre-warm walk that pages source files into the OS
     /// cache. The walk runs once, in the background, and does not block
@@ -67,6 +77,7 @@ async fn main() -> Result<()> {
         root = %root.display(),
         changelog_capacity = args.changelog_capacity,
         search_cache_capacity = args.search_cache_capacity,
+        parse_cache_capacity = args.parse_cache_capacity,
         prewarm = !args.no_prewarm,
         "starting daemon",
     );
@@ -75,6 +86,7 @@ async fn main() -> Result<()> {
         root,
         args.changelog_capacity,
         args.search_cache_capacity,
+        args.parse_cache_capacity,
         !args.no_prewarm,
     )
     .await
