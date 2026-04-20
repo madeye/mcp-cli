@@ -210,7 +210,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "search_grep",
-            "description": "Run a regex search using ripgrep's library (grep-searcher) over the project tree. Set `compact: true` to bucket hits per file (one row per matching file with match count + first/last line numbers) instead of returning every line — much smaller payload when the agent only needs to know which files matched.",
+            "description": "Regex search over the project tree (grep-searcher). Each hit carries `path`, `line_number`, `line`; set `context: N` to attach N lines before and after each match as `hit.context[]`. `compact: true` returns per-file buckets instead of per-line hits.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -219,7 +219,8 @@ fn tool_definitions() -> Value {
                     "glob": {"type": "string", "description": "Override glob (e.g. '*.rs')."},
                     "max_results": {"type": "integer", "minimum": 1, "default": 200},
                     "case_insensitive": {"type": "boolean", "default": false},
-                    "compact": {"type": "boolean", "default": false, "description": "Bucket hits per file instead of returning every matching line."}
+                    "compact": {"type": "boolean", "default": false, "description": "Bucket hits per file instead of returning every matching line."},
+                    "context": {"type": "integer", "minimum": 0, "maximum": 20, "default": 0, "description": "Lines of context before and after each match."}
                 },
                 "required": ["pattern"]
             }

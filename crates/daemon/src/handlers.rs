@@ -1,16 +1,15 @@
 use std::fs::File;
 
 use grep_regex::RegexMatcherBuilder;
-use grep_searcher::sinks::UTF8;
-use grep_searcher::SearcherBuilder;
+use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch};
 use ignore::WalkBuilder;
 use memmap2::Mmap;
 use protocol::{
     CodeOutlineParams, CodeOutlineResult, CodeSymbolsParams, CodeSymbolsResult, FsChangesParams,
     FsChangesResult, FsReadBatchItem, FsReadBatchParams, FsReadBatchResult, FsReadParams,
     FsReadResult, FsScanParams, FsScanResult, FsSnapshotResult, GitStatusEntry, GitStatusParams,
-    GitStatusResult, MetricsGainParams, MetricsToolLatencyParams, RpcError, SearchGrepParams,
-    SearchGrepResult, SearchHit,
+    GitStatusResult, MetricsGainParams, MetricsToolLatencyParams, RpcError, SearchContextLine,
+    SearchGrepParams, SearchGrepResult, SearchHit,
 };
 
 use crate::compact;
@@ -25,6 +24,11 @@ const GIT_STATUS_TOP_DIRS_PER_CLASS: usize = 16;
 
 const FS_READ_DEFAULT_LIMIT: u64 = 256 * 1024;
 const SEARCH_DEFAULT_LIMIT: usize = 200;
+/// Upper bound on the per-match context window. Bigger values blow up
+/// the response without buying the agent new signal — and a compromised
+/// client sending `context: 1e9` otherwise makes the daemon stream the
+/// whole file per match.
+const SEARCH_CONTEXT_CAP: u32 = 20;
 
 pub fn fs_read(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
     let params: FsReadParams = serde_json::from_value(params)
@@ -326,12 +330,14 @@ pub fn search_grep(
     // time. Any file change landing after this will bump the version and
     // invalidate the entry on next access.
     let (version, _) = daemon.changelog.snapshot();
+    let context_lines = params.context.min(SEARCH_CONTEXT_CAP);
     let cache_key = SearchKey {
         pattern: params.pattern.clone(),
         path: params.path.clone(),
         glob: params.glob.clone(),
         max_results: params.max_results,
         case_insensitive: params.case_insensitive,
+        context: context_lines,
     };
     if let Some(cached) = daemon.search_cache.get(version, &cache_key) {
         // Cache stores the raw form; compact on the way out if asked.
@@ -360,7 +366,7 @@ pub fn search_grep(
         walker.overrides(built);
     }
 
-    'outer: for entry in walker.build() {
+    for entry in walker.build() {
         let entry = match entry {
             Ok(e) => e,
             Err(_) => continue,
@@ -375,36 +381,21 @@ pub fn search_grep(
             .to_string_lossy()
             .to_string();
 
-        let mut searcher = SearcherBuilder::new().line_number(true).build();
-        let local_path = rel_path.clone();
-        let result = searcher.search_path(
-            &matcher,
-            &path,
-            UTF8(|lnum, line| {
-                if hits.len() >= max_hits {
-                    return Ok(false);
-                }
-                let mut line_text = line.to_string();
-                if line_text.ends_with('\n') {
-                    line_text.pop();
-                }
-                if line_text.ends_with('\r') {
-                    line_text.pop();
-                }
-                hits.push(SearchHit {
-                    path: local_path.clone(),
-                    line_number: lnum,
-                    line: line_text,
-                });
-                Ok(true)
-            }),
-        );
+        let mut builder = SearcherBuilder::new();
+        builder.line_number(true);
+        if context_lines > 0 {
+            builder.before_context(context_lines as usize);
+            builder.after_context(context_lines as usize);
+        }
+        let mut searcher = builder.build();
+        let mut sink = ContextSink::new(&rel_path, context_lines, &mut hits, max_hits);
+        let result = searcher.search_path(&matcher, &path, &mut sink);
         if let Err(e) = result {
             tracing::debug!(path = %rel_path, error = %e, "search error");
         }
         if hits.len() >= max_hits {
             truncated = true;
-            break 'outer;
+            break;
         }
     }
 
@@ -502,4 +493,104 @@ pub fn metrics_tool_latency(
     let _params: MetricsToolLatencyParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     Ok(serde_json::to_value(daemon.metrics.snapshot_latency()).unwrap())
+}
+
+/// Custom `grep-searcher` Sink that emits matches *with their
+/// surrounding context lines already attached*. Collapses the common
+/// "grep then fs_read around the hit" two-call pattern into a single
+/// `search_grep` round-trip.
+///
+/// Lifetime soup: we borrow `&mut Vec<SearchHit>` across files so the
+/// top-level handler can cap total hits — each new file gets a fresh
+/// sink but appends to the same hit vec.
+struct ContextSink<'a> {
+    path: &'a str,
+    hits: &'a mut Vec<SearchHit>,
+    max_hits: usize,
+    /// Index into `hits[]` of the most recent match this sink emitted
+    /// for the current file. `None` at the start of each file (the
+    /// handler constructs one sink per file). Used to attach After /
+    /// Other context lines and any leftover pending on `finish`.
+    last_hit_idx: Option<usize>,
+    /// Before-context lines buffered ahead of the next match.
+    /// `grep-searcher` emits context in file order with the kind
+    /// (Before / After / Other) marked, so classification is
+    /// explicit — no line-number arithmetic required.
+    pending_before: Vec<SearchContextLine>,
+}
+
+impl<'a> ContextSink<'a> {
+    fn new(
+        path: &'a str,
+        _context_lines: u32,
+        hits: &'a mut Vec<SearchHit>,
+        max_hits: usize,
+    ) -> Self {
+        Self {
+            path,
+            hits,
+            max_hits,
+            last_hit_idx: None,
+            pending_before: Vec::new(),
+        }
+    }
+
+    fn strip_crlf(bytes: &[u8]) -> String {
+        let mut s = String::from_utf8_lossy(bytes).into_owned();
+        if s.ends_with('\n') {
+            s.pop();
+        }
+        if s.ends_with('\r') {
+            s.pop();
+        }
+        s
+    }
+}
+
+impl Sink for ContextSink<'_> {
+    type Error = std::io::Error;
+
+    fn matched(&mut self, _: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+        if self.hits.len() >= self.max_hits {
+            return Ok(false);
+        }
+        let line_number = mat.line_number().unwrap_or(0);
+        let line = Self::strip_crlf(mat.bytes());
+        let context = std::mem::take(&mut self.pending_before);
+        self.last_hit_idx = Some(self.hits.len());
+        self.hits.push(SearchHit {
+            path: self.path.to_string(),
+            line_number,
+            line,
+            context,
+        });
+        // Continue unless we just hit the cap on the *match* count
+        // (which will stop the per-file search immediately).
+        Ok(self.hits.len() < self.max_hits)
+    }
+
+    fn context(&mut self, _: &Searcher, ctx: &SinkContext<'_>) -> Result<bool, Self::Error> {
+        // After the match cap is hit we stop appending context too —
+        // a trailing After block from an earlier match is harmless to
+        // drop since the handler already decided to truncate.
+        if self.hits.len() >= self.max_hits {
+            return Ok(false);
+        }
+        let entry = SearchContextLine {
+            line_number: ctx.line_number().unwrap_or(0),
+            line: Self::strip_crlf(ctx.bytes()),
+        };
+        match ctx.kind() {
+            SinkContextKind::Before => self.pending_before.push(entry),
+            SinkContextKind::After | SinkContextKind::Other => {
+                if let Some(idx) = self.last_hit_idx {
+                    self.hits[idx].context.push(entry);
+                }
+                // Otherwise we saw context without a preceding match
+                // in this file (shouldn't happen for a well-formed
+                // Before stream; defensive drop).
+            }
+        }
+        Ok(true)
+    }
 }

@@ -180,11 +180,28 @@ pub struct SearchGrepParams {
     /// match, not every line.
     #[serde(default)]
     pub compact: bool,
+    /// Return this many lines of context before and after each match,
+    /// attached as `hit.context`. Default 0 (matches only). Capped at
+    /// 20 by the daemon to keep responses bounded.
+    #[serde(default)]
+    pub context: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchHit {
     pub path: String,
+    pub line_number: u64,
+    pub line: String,
+    /// Surrounding context requested via `SearchGrepParams::context`.
+    /// Each entry carries its own 1-based `line_number` and the line
+    /// text (trailing `\r`/`\n` stripped). Empty (and omitted in
+    /// serialization) when context wasn't requested.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<SearchContextLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchContextLine {
     pub line_number: u64,
     pub line: String,
 }

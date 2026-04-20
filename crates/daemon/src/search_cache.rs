@@ -18,6 +18,11 @@ pub struct SearchKey {
     pub glob: Option<String>,
     pub max_results: Option<usize>,
     pub case_insensitive: bool,
+    /// Context-lines count requested. Part of the key because the
+    /// cached response shape differs (hits grow a `context` array)
+    /// — a cache hit for `context=0` must not silently satisfy a
+    /// `context=5` request.
+    pub context: u32,
 }
 
 pub struct SearchCache {
@@ -90,6 +95,7 @@ mod tests {
             path: path.into(),
             line_number: line,
             line: format!("line {line}"),
+            context: Vec::new(),
         }
     }
 
@@ -100,6 +106,7 @@ mod tests {
             glob: None,
             max_results: None,
             case_insensitive: false,
+            context: 0,
         }
     }
 

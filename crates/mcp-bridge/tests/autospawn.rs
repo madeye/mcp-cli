@@ -200,6 +200,66 @@ fn run_exchange(child: &mut Child, project_root: &Path) {
         "entry 2 should not carry a result: {binner}"
     );
 
+    // search_grep with context=2 — the match line should come back
+    // with up to 2 lines before and 2 lines after attached to its
+    // `context` array. Seed a small multi-line file so the expected
+    // surround is deterministic.
+    std::fs::write(
+        project_root.join("ctx.txt"),
+        b"alpha\nbeta\nNEEDLE here\ngamma\ndelta\n",
+    )
+    .expect("seed ctx");
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "search_grep",
+                "arguments": {
+                    "pattern": "NEEDLE",
+                    "glob": "ctx.txt",
+                    "context": 2,
+                },
+            },
+        }),
+    );
+    let search = read_response(&mut reader, 5);
+    let stext = search
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("search_grep missing content text: {search}"));
+    let sinner: Value = serde_json::from_str(stext).expect("parse search result");
+    let hits = sinner
+        .get("hits")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("search_grep missing hits[]: {sinner}"));
+    assert_eq!(hits.len(), 1, "expected one match: {sinner}");
+    let hit = &hits[0];
+    assert_eq!(hit.pointer("/line_number"), Some(&json!(3)));
+    assert_eq!(hit.pointer("/line"), Some(&json!("NEEDLE here")));
+    let context = hit
+        .get("context")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("hit missing context[]: {hit}"));
+    // Expect the two lines before (alpha, beta) and two after
+    // (gamma, delta) in file order.
+    let got: Vec<(u64, &str)> = context
+        .iter()
+        .map(|c| {
+            (
+                c.get("line_number").and_then(Value::as_u64).unwrap_or(0),
+                c.get("line").and_then(Value::as_str).unwrap_or(""),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![(1, "alpha"), (2, "beta"), (4, "gamma"), (5, "delta"),],
+        "unexpected context window: {hit}"
+    );
+
     // Give the ring buffer a beat to register our connection as active
     // so the idle timer doesn't win the race against test teardown.
     std::thread::sleep(Duration::from_millis(50));

@@ -175,6 +175,7 @@ mod tests {
             path: path.to_string(),
             line_number: line,
             line: format!("L{}", line),
+            context: Vec::new(),
         }
     }
 
