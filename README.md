@@ -5,6 +5,29 @@ A sidecar-daemon + MCP bridge designed to give CLI/IDE-based AI agents
 and source code **without paying the per-call fork/exec tax** of traditional
 shell-tool wrappers.
 
+## Headline numbers
+
+Measured on codex (`rust-v0.121.0`) analysing its own source tree —
+single-sample, full writeup in
+[`bench/codex-forkexec/results/2026-04-20-rust-v0.121.0-prefer-mcp.md`](./bench/codex-forkexec/results/2026-04-20-rust-v0.121.0-prefer-mcp.md):
+
+| metric | baseline | with mcp-cli | delta |
+|---|---:|---:|---:|
+| `execve` total | 103 | 22 | **−79 %** |
+| `rg` invocations | 24 | 0 | −100 % |
+| `sed` invocations | 58 | 2 | −97 % |
+| input tokens | 2,159,617 | 1,755,579 | **−19 %** |
+| output tokens | 9,896 | 8,641 | −13 % |
+| MCP calls on the daemon | 0 | 124 | *`fs_read` ×50, `search_grep` ×70, `fs_scan` ×4* |
+
+Wall clock regressed 45 % on this run — codex made ~2.7× more turns
+because each MCP call is atomic while a bash command can be a
+pipeline. The bench writeup walks through which compound/batch MCP
+tools would close the gap (kernel overhead and token budget are
+already wins; wall-clock recovery needs MCP-tool-shape work, not
+daemon-perf work). See [`bench/codex-forkexec/`](./bench/codex-forkexec/)
+to reproduce.
+
 ## Architecture
 
 ```
@@ -65,35 +88,56 @@ indexing, language-specific backends like clangd / rust-analyzer reuse).
 cargo build --release
 ```
 
-Artifacts:
+Artifacts under `target/release/`: `mcp-cli-daemon`, `mcp-cli-bridge`,
+and the `mcp-cli` installer.
 
-* `target/release/mcp-cli-daemon`
-* `target/release/mcp-cli-bridge`
+## Install
 
-## Run
-
-Start the daemon for your project:
+One-command registration for the agents the installer knows about:
 
 ```sh
-mcp-cli-daemon --socket /tmp/mcp-cli.sock --root /path/to/project
+# Claude Code + Codex at once (auto-spawns the daemon on first tool
+# call; no always-on process needed).
+target/release/mcp-cli install
 ```
 
-Register the bridge as an MCP server in your agent. Example for Claude Code's
-`~/.config/claude/config.json`:
+For **codex specifically**, also pass `--prefer-mcp` so codex
+actually routes through the daemon instead of preferring its own
+built-in Bash (this is the configuration the headline numbers were
+measured under):
 
-```json
-{
-  "mcpServers": {
-    "mcp-cli": {
-      "command": "/path/to/mcp-cli-bridge",
-      "args": ["--socket", "/tmp/mcp-cli.sock"]
-    }
-  }
-}
+```sh
+target/release/mcp-cli install --target codex --prefer-mcp
 ```
+
+`--prefer-mcp` writes `[features] shell_tool = false` to
+`~/.codex/config.toml` (so codex stops emitting Bash tool calls for
+`cat` / `rg` / `git` / etc.) and sets per-tool
+`approval_mode = "approve"` for every mcp-cli tool (so codex doesn't
+prompt for approval in non-interactive `codex exec`).
+
+Without `--prefer-mcp`, codex still *mounts* mcp-cli but keeps
+reaching for Bash — see the v1 benchmark writeup for evidence.
+
+The daemon auto-spawns per project root on the bridge's first
+connect and idle-exits after 30 min of inactivity; you don't need
+to run anything by hand. To always keep one resident, see
+[`doc/services/`](./doc/services/).
 
 ## Status
 
-Skeleton. Working primitives: `fs_read`, `fs_snapshot`, `fs_changes`,
-`fs_scan`, `git_status`, `search_grep`. Planned: tree-sitter indexing,
-pluggable language backends, `io_uring` I/O path on Linux.
+See [`doc/roadmap.md`](./doc/roadmap.md) and
+[`doc/todo.md`](./doc/todo.md).
+
+* **Done** — skeleton, incremental sync (`fs.snapshot` / `fs.changes`
+  / `fs.scan`), tree-sitter `code.outline` / `code.symbols` parse
+  cache, drop-in install (`mcp-cli install`), per-cwd auto-spawn,
+  reconnect-on-dead, multi-bridge contention test, mimalloc +
+  buffer pool, first M5 benchmark numbers, M7 compaction foundation
+  (`?compact` on `git.status` / `search.grep`, `metrics.gain` +
+  `metrics.tool_latency`), and the `--prefer-mcp` path that made
+  the headline numbers above actually move.
+* **Open** — rust-analyzer / clangd language backends, compound /
+  batch MCP tools to close the wall-clock regression from the
+  benchmark, `io_uring` I/O, per-request arenas, optional LSP /
+  WASI mounting surfaces.
