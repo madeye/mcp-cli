@@ -19,7 +19,10 @@ use protocol::{
 /// `top_dirs_per_class` caps how many directory rows per class show up in
 /// the response — the remainder is summed into a synthetic `(other)` row
 /// so totals always reconcile.
-pub fn git_status_compact(entries: &[GitStatusEntry], top_dirs_per_class: usize) -> GitStatusCompact {
+pub fn git_status_compact(
+    entries: &[GitStatusEntry],
+    top_dirs_per_class: usize,
+) -> GitStatusCompact {
     let mut by_class: BTreeMap<&str, BTreeMap<String, usize>> = BTreeMap::new();
     let mut total = 0usize;
 
@@ -75,7 +78,10 @@ pub fn git_status_compact(entries: &[GitStatusEntry], top_dirs_per_class: usize)
     // Stable order: heaviest class first, then alphabetical for ties.
     buckets.sort_by(|a, b| b.count.cmp(&a.count).then(a.class.cmp(&b.class)));
 
-    GitStatusCompact { by_class: buckets, total }
+    GitStatusCompact {
+        by_class: buckets,
+        total,
+    }
 }
 
 /// Bucket `search.grep` hits by file. One bucket per file with a match
@@ -86,9 +92,10 @@ pub fn search_grep_compact(hits: &[SearchHit]) -> SearchGrepCompact {
     // and for diffability of cached responses.
     let mut by_path: BTreeMap<&str, (usize, u64, u64)> = BTreeMap::new();
     for hit in hits {
-        let entry = by_path
-            .entry(hit.path.as_str())
-            .or_insert((0, hit.line_number, hit.line_number));
+        let entry =
+            by_path
+                .entry(hit.path.as_str())
+                .or_insert((0, hit.line_number, hit.line_number));
         entry.0 += 1;
         entry.1 = entry.1.min(hit.line_number);
         entry.2 = entry.2.max(hit.line_number);
@@ -175,12 +182,12 @@ mod tests {
     fn primary_class_picks_most_actionable_flag() {
         assert_eq!(primary_status_class("conflicted,wt_modified"), "conflicted");
         assert_eq!(primary_status_class("wt_deleted,index_deleted"), "deleted");
-        assert_eq!(
-            primary_status_class("wt_renamed,wt_modified"),
-            "renamed",
-        );
+        assert_eq!(primary_status_class("wt_renamed,wt_modified"), "renamed",);
         assert_eq!(primary_status_class("wt_typechange"), "typechange");
-        assert_eq!(primary_status_class("wt_modified,index_modified"), "modified");
+        assert_eq!(
+            primary_status_class("wt_modified,index_modified"),
+            "modified"
+        );
         assert_eq!(primary_status_class("wt_new"), "untracked");
         assert_eq!(primary_status_class("ignored"), "ignored");
         assert_eq!(primary_status_class("clean"), "clean");

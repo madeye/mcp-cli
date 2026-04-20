@@ -40,9 +40,7 @@ impl ToolMetrics {
         let guard = self.inner.lock();
         if let Some((_, counter)) = guard.iter().find(|(k, _)| k == tool) {
             counter.calls.fetch_add(1, Ordering::Relaxed);
-            counter
-                .raw_bytes
-                .fetch_add(raw_bytes, Ordering::Relaxed);
+            counter.raw_bytes.fetch_add(raw_bytes, Ordering::Relaxed);
             counter
                 .compacted_bytes
                 .fetch_add(compacted_bytes, Ordering::Relaxed);
