@@ -119,7 +119,61 @@ the kernel, and reduce time spent in the allocator.
   — particularly important for tree-sitter parses and large context
   assembly, where per-object `free` pressure dominates otherwise. (pending)
 
-## M5 - Multi-client + lifecycle (pending)
+## M5 - Codex fork/exec reduction benchmark (pending)
+
+The whole project's premise is "make per-call kernel overhead go to
+zero by replacing fork/exec with a daemon round-trip." M5 is the
+load-bearing measurement of that premise: a reproducible benchmark
+that runs an identical agent task under Codex twice — once with
+vanilla Codex tooling (`Bash` shells out to `cat`/`grep`/`git` for
+every call) and once with the mcp-cli MCP plugin loaded
+(`fs.read`/`search.grep`/`git.status` served by the daemon, no
+fork/exec) — and reports the delta in `execve` syscall count,
+wall-clock, and tokens consumed.
+
+The task itself is deliberately self-referential: ask Codex to
+analyze the **Codex repository at its own latest release tag** and
+propose three concrete performance enhancements. Picking Codex's
+own source has two benefits — the workload is realistic
+(grep-heavy, git-heavy, lots of small file reads, the exact shape
+mcp-cli is tuned for) and the prompt naturally re-uses the same
+files as the agent walks the repo.
+
+### What the benchmark measures
+
+* **`execve` count** — tracer-counted (`strace -e trace=execve -f`
+  on Linux, `dtruss -f -t execve` on macOS). The per-tool breakdown
+  separates the binaries the daemon obviates (`cat`, `grep`, `rg`,
+  `git`, `find`, `ls`, `head`, `tail`) from the rest, so a regression
+  in mcp-cli coverage shows up as a binary that crept back into the
+  trace.
+* **Wall-clock** — total time from prompt accept to terminal `exit`.
+  Captured per run for both modes.
+* **Token consumption** — Codex's own usage stats (parsed from its
+  stdout / `~/.codex/sessions/`).
+* **Per-tool latency** (optional) — daemon-side instrumentation that
+  records p50/p99 of `fs.read`, `search.grep`, `git.status`. Lets us
+  catch a daemon-side regression that would otherwise hide behind
+  "we still saved fork/exec, but each call got slower."
+
+### Where it lives
+
+`bench/codex-forkexec/` outside the cargo workspace. Driver is bash
++ python (no need to drag in a benchmarking crate); requires Codex
+on `PATH` and either `strace` (Linux) or root + `dtruss` (macOS).
+
+### Why this is a milestone, not just a script
+
+* It is the shipping criterion for every other milestone. M3 / M4 /
+  M6 each claim "fewer fork/execs" or "fewer bytes per call" — the
+  benchmark is the only way to put a number on those claims.
+* Running it in CI on every PR (eventually) lets us regression-gate
+  on the kernel-overhead curve. A new feature that quietly shells
+  out behind the scenes will show up immediately.
+* The output table is the artifact we point at when explaining
+  what mcp-cli buys you.
+
+## M6 - Multi-client + lifecycle (pending)
 
 Daemon auto-spawn and per-cwd socket routing move up into M3 (see the
 *Drop-in install* track above). What remains here is hardening under
