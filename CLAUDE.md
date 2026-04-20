@@ -65,3 +65,23 @@ MCP client (Claude Code / Codex) ──stdio──> mcp-cli-bridge ──UDS─�
 ## Roadmap context
 
 See `doc/roadmap.md` and `doc/todo.md`. M0 (skeleton), M1 (incremental sync), and M2 (indexing — pre-warm, `search.grep` LRU, tree-sitter parse cache, `code.outline`/`code.symbols`) are done. M3 is next: pluggable language backends (rust-analyzer, clangd) behind a `LanguageBackend` trait. New functionality should slot into one of those milestones rather than grow ad-hoc handlers.
+
+## PR / merge workflow
+
+CI is the merge gate **only when the PR contains a source change**. A PR
+that touches nothing under `crates/`, `bench/codex-forkexec/*.{sh,py}`,
+or any build configuration (`Cargo.{toml,lock}`, `rust-toolchain.toml`,
+`.github/workflows/**`) — i.e. a docs-only / roadmap-only / comment-only
+PR — should be rebase-merged immediately on `gh pr create`, without
+waiting for `gh pr checks` to go green. Use
+`gh pr merge <num> --rebase --delete-branch --admin` to bypass any
+required-status-check rule on a docs-only change.
+
+Decision rule: run `git diff --name-only origin/main...HEAD` against the
+branch and check whether any path matches a "source" pattern. If none
+do, treat the PR as docs-only and merge straight away.
+
+**Why:** docs PRs (roadmap/todo updates, comment-only edits) can't break
+the build. Waiting on a 2–4 minute CI cycle that exists to lint Rust
+adds latency for zero correctness value. For source PRs CI still gates
+the merge — never bypass it on a real code change.
