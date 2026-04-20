@@ -5,11 +5,13 @@ use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKin
 use ignore::WalkBuilder;
 use memmap2::Mmap;
 use protocol::{
-    CodeOutlineParams, CodeOutlineResult, CodeSymbolsParams, CodeSymbolsResult, FsChangesParams,
-    FsChangesResult, FsReadBatchItem, FsReadBatchParams, FsReadBatchResult, FsReadParams,
-    FsReadResult, FsScanParams, FsScanResult, FsSnapshotResult, GitStatusEntry, GitStatusParams,
-    GitStatusResult, MetricsGainParams, MetricsToolLatencyParams, RpcError, SearchContextLine,
-    SearchGrepParams, SearchGrepResult, SearchHit,
+    CodeOutlineBatchItem, CodeOutlineBatchParams, CodeOutlineBatchResult, CodeOutlineParams,
+    CodeOutlineResult, CodeSymbolsBatchItem, CodeSymbolsBatchParams, CodeSymbolsBatchResult,
+    CodeSymbolsParams, CodeSymbolsResult, FsChangesParams, FsChangesResult, FsReadBatchItem,
+    FsReadBatchParams, FsReadBatchResult, FsReadParams, FsReadResult, FsScanParams, FsScanResult,
+    FsSnapshotResult, GitStatusEntry, GitStatusParams, GitStatusResult, MetricsGainParams,
+    MetricsToolLatencyParams, RpcError, SearchContextLine, SearchGrepParams, SearchGrepResult,
+    SearchHit,
 };
 
 use crate::compact;
@@ -441,18 +443,51 @@ pub fn code_outline(
 ) -> Result<serde_json::Value, RpcError> {
     let params: CodeOutlineParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
-    let path = resolve_within(&daemon.root, &params.path)?;
+    Ok(serde_json::to_value(code_outline_inner(daemon, &params)?).unwrap())
+}
 
+pub fn code_outline_batch(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: CodeOutlineBatchParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let responses = params
+        .requests
+        .into_iter()
+        .map(|req| {
+            let path = req.path.clone();
+            match code_outline_inner(daemon, &req) {
+                Ok(r) => CodeOutlineBatchItem {
+                    path,
+                    result: Some(r),
+                    error: None,
+                },
+                Err(e) => CodeOutlineBatchItem {
+                    path,
+                    result: None,
+                    error: Some(e),
+                },
+            }
+        })
+        .collect();
+    Ok(serde_json::to_value(CodeOutlineBatchResult { responses }).unwrap())
+}
+
+fn code_outline_inner(
+    daemon: &Daemon,
+    params: &CodeOutlineParams,
+) -> Result<CodeOutlineResult, RpcError> {
+    let path = resolve_within(&daemon.root, &params.path)?;
     let (language, entries) = match daemon.backends.outline(&path)? {
         Some(r) => (Some(r.language.name().to_string()), r.entries),
         None => (None, Vec::new()),
     };
-    Ok(serde_json::to_value(CodeOutlineResult {
-        path: params.path,
+    Ok(CodeOutlineResult {
+        path: params.path.clone(),
         language,
         entries,
     })
-    .unwrap())
 }
 
 pub fn code_symbols(
@@ -461,18 +496,51 @@ pub fn code_symbols(
 ) -> Result<serde_json::Value, RpcError> {
     let params: CodeSymbolsParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
-    let path = resolve_within(&daemon.root, &params.path)?;
+    Ok(serde_json::to_value(code_symbols_inner(daemon, &params)?).unwrap())
+}
 
+pub fn code_symbols_batch(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: CodeSymbolsBatchParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let responses = params
+        .requests
+        .into_iter()
+        .map(|req| {
+            let path = req.path.clone();
+            match code_symbols_inner(daemon, &req) {
+                Ok(r) => CodeSymbolsBatchItem {
+                    path,
+                    result: Some(r),
+                    error: None,
+                },
+                Err(e) => CodeSymbolsBatchItem {
+                    path,
+                    result: None,
+                    error: Some(e),
+                },
+            }
+        })
+        .collect();
+    Ok(serde_json::to_value(CodeSymbolsBatchResult { responses }).unwrap())
+}
+
+fn code_symbols_inner(
+    daemon: &Daemon,
+    params: &CodeSymbolsParams,
+) -> Result<CodeSymbolsResult, RpcError> {
+    let path = resolve_within(&daemon.root, &params.path)?;
     let (language, names) = match daemon.backends.symbols(&path)? {
         Some(r) => (Some(r.language.name().to_string()), r.names),
         None => (None, Vec::new()),
     };
-    Ok(serde_json::to_value(CodeSymbolsResult {
-        path: params.path,
+    Ok(CodeSymbolsResult {
+        path: params.path.clone(),
         language,
         names,
     })
-    .unwrap())
 }
 
 pub fn metrics_gain(

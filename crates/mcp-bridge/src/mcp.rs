@@ -118,7 +118,9 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
         "git_status" => protocol::methods::GIT_STATUS,
         "search_grep" => protocol::methods::SEARCH_GREP,
         "code_outline" => protocol::methods::CODE_OUTLINE,
+        "code_outline_batch" => protocol::methods::CODE_OUTLINE_BATCH,
         "code_symbols" => protocol::methods::CODE_SYMBOLS,
+        "code_symbols_batch" => protocol::methods::CODE_SYMBOLS_BATCH,
         "metrics_gain" => protocol::methods::METRICS_GAIN,
         "metrics_tool_latency" => protocol::methods::METRICS_TOOL_LATENCY,
         other => return Err(anyhow::anyhow!("unknown tool: {other}")),
@@ -237,6 +239,25 @@ fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "code_outline_batch",
+            "description": "code_outline for many files in one MCP call. Response is a parallel list of {path, result?, error?}; per-request failures do not abort the batch.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "requests": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"]
+                        },
+                        "minItems": 1
+                    }
+                },
+                "required": ["requests"]
+            }
+        },
+        {
             "name": "code_symbols",
             "description": "Return a flat, de-duplicated list of top-level symbol names in a source file (function names, type names, etc.). Cheaper than code_outline when only names are needed.",
             "inputSchema": {
@@ -245,6 +266,25 @@ fn tool_definitions() -> Value {
                     "path": {"type": "string", "description": "Path relative to project root."}
                 },
                 "required": ["path"]
+            }
+        },
+        {
+            "name": "code_symbols_batch",
+            "description": "code_symbols for many files in one MCP call. Response is a parallel list of {path, result?, error?}; per-request failures do not abort the batch.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "requests": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"]
+                        },
+                        "minItems": 1
+                    }
+                },
+                "required": ["requests"]
             }
         },
         {

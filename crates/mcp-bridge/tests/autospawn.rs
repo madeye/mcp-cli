@@ -200,6 +200,75 @@ fn run_exchange(child: &mut Child, project_root: &Path) {
         "entry 2 should not carry a result: {binner}"
     );
 
+    // code_symbols_batch: hits the daemon's tree-sitter backend over
+    // two real source files, plus one path that doesn't exist to
+    // exercise per-item error isolation.
+    std::fs::write(
+        project_root.join("a.rs"),
+        b"fn alpha() {}\nstruct Beta;\n",
+    )
+    .expect("seed a.rs");
+    std::fs::write(
+        project_root.join("b.rs"),
+        b"fn gamma() {}\n",
+    )
+    .expect("seed b.rs");
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "code_symbols_batch",
+                "arguments": {
+                    "requests": [
+                        {"path": "a.rs"},
+                        {"path": "b.rs"},
+                        {"path": "missing.rs"},
+                    ]
+                },
+            },
+        }),
+    );
+    let symbatch = read_response(&mut reader, 6);
+    let symtext = symbatch
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("code_symbols_batch missing content text: {symbatch}"));
+    let syminner: Value =
+        serde_json::from_str(symtext).expect("parse code_symbols_batch result");
+    let symresps = syminner
+        .get("responses")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("code_symbols_batch missing responses[]: {syminner}"));
+    assert_eq!(symresps.len(), 3, "expected 3 entries: {syminner}");
+
+    let names_a: Vec<&str> = symresps[0]
+        .pointer("/result/names")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    assert!(
+        names_a.contains(&"alpha") && names_a.contains(&"Beta"),
+        "a.rs should expose alpha + Beta: {syminner}"
+    );
+
+    let names_b: Vec<&str> = symresps[1]
+        .pointer("/result/names")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    assert!(
+        names_b.contains(&"gamma"),
+        "b.rs should expose gamma: {syminner}"
+    );
+
+    assert!(
+        symresps[2].get("error").is_some(),
+        "missing.rs entry must carry error: {syminner}"
+    );
+
     // search_grep with context=2 — the match line should come back
     // with up to 2 lines before and 2 lines after attached to its
     // `context` array. Seed a small multi-line file so the expected
