@@ -42,6 +42,23 @@ impl BufferPool {
         }
     }
 
+    /// Borrow a buffer with at least `min_capacity` bytes already
+    /// reserved. Useful for callers that know the response size up
+    /// front (`fs.read` for a known file length, response serialization
+    /// after an estimate) — saves the ramp-up reallocations the
+    /// underlying `Vec` would otherwise do as `extend_from_slice` /
+    /// `to_writer` push past each doubling boundary.
+    pub fn acquire_with_capacity(&self, min_capacity: usize) -> PooledBuffer<'_> {
+        let mut buf = self.inner.lock().pop().unwrap_or_default();
+        if buf.capacity() < min_capacity {
+            buf.reserve_exact(min_capacity - buf.capacity());
+        }
+        PooledBuffer {
+            pool: self,
+            buf: Some(buf),
+        }
+    }
+
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.inner.lock().len()
@@ -140,5 +157,26 @@ mod tests {
         // acquire pops, fills, and drops in turn.
         assert!(pool.len() <= 4);
         assert!(pool.len() >= 1);
+    }
+
+    #[test]
+    fn acquire_with_capacity_reserves_at_least_min() {
+        let pool = BufferPool::new(4, 16 * 1024);
+        let buf = pool.acquire_with_capacity(8 * 1024);
+        assert!(buf.is_empty());
+        assert!(buf.capacity() >= 8 * 1024);
+    }
+
+    #[test]
+    fn acquire_with_capacity_does_not_shrink_existing_buffer() {
+        let pool = BufferPool::new(4, 16 * 1024);
+        // Seed the pool with a buffer that already has 4 KiB of capacity.
+        {
+            let mut buf = pool.acquire();
+            buf.resize(4 * 1024, 0);
+        }
+        // Asking for 1 KiB shouldn't shrink the recycled 4 KiB buffer.
+        let buf = pool.acquire_with_capacity(1024);
+        assert!(buf.capacity() >= 4 * 1024);
     }
 }

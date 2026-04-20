@@ -92,9 +92,16 @@ Concrete, actionable items. Group headers track milestones in
       wired into the per-connection frame reader so request frame
       buffers are reused across calls instead of allocated per request.
 - [ ] Per-request arena allocator for response building (hot path:
-      tree-sitter parse + context assembly).
-- [ ] Extend the buffer pool to additional hot paths (response
-      serialization, parse_cache source reads).
+      tree-sitter parse + context assembly). Deferred — substantial
+      lifetime threading required for `bumpalo` integration.
+- [x] Extend the buffer pool to response serialization. New
+      `BufferPool::acquire_with_capacity(min)` method; `handle_conn`'s
+      response-write path now goes through `write_response_pooled`
+      which serializes JSON directly into a recycled buffer (1 KiB
+      starting capacity covers most responses without growth
+      reallocations). `parse_cache` source reads remain on
+      `std::fs::read` because the source `Vec` is held by the cache
+      entry for the file's lifetime — no recycling opportunity there.
 - [ ] Linux: experiment with `io_uring` for `fs.read` and walker I/O. Gate
       behind `--io-uring`.
 - [ ] Thread-per-core tokio runtime with per-worker `io_uring` rings

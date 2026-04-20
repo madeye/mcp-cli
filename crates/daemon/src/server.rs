@@ -230,16 +230,30 @@ async fn handle_conn(mut stream: UnixStream, daemon: Arc<Daemon>) -> Result<()> 
                     result: None,
                     error: Some(RpcError::new(-32700, e.to_string())),
                 };
-                let payload = serde_json::to_vec(&resp)?;
-                write_frame(&mut write_half, &payload).await?;
+                write_response_pooled(&daemon, &mut write_half, &resp).await?;
                 continue;
             }
         };
 
         let resp = dispatch(&daemon, req).await;
-        let payload = serde_json::to_vec(&resp)?;
-        write_frame(&mut write_half, &payload).await?;
+        write_response_pooled(&daemon, &mut write_half, &resp).await?;
     }
+}
+
+/// Serialize `resp` into a pooled frame buffer and write it.
+///
+/// Recycles the same `BufferPool` the per-connection frame reader
+/// uses — outgoing JSON has the same size profile as incoming JSON
+/// for almost every method, so steady-state traffic shouldn't need
+/// to allocate a fresh response buffer at all. The 1 KiB starting
+/// capacity covers most responses without any growth reallocations.
+async fn write_response_pooled<W>(daemon: &Daemon, w: &mut W, resp: &Response) -> Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut buf = daemon.frame_pool.acquire_with_capacity(1024);
+    serde_json::to_writer(&mut *buf, resp)?;
+    write_frame(w, &buf).await
 }
 
 async fn dispatch(daemon: &Daemon, req: Request) -> Response {
