@@ -1,4 +1,5 @@
 mod backends;
+mod buffer_pool;
 mod changelog;
 mod framing;
 mod handlers;
@@ -16,6 +17,15 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
+
+// mimalloc gives the daemon a meaningful win on the tree-sitter /
+// hashmap-heavy hot paths and matters more once future arenas and
+// pooled buffers stack on top of it. Only the daemon needs it — the
+// bridge and installer are short-lived processes. Opt out with
+// `--no-default-features` for valgrind / heaptrack / ASan runs.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[derive(Debug, Parser)]
 #[command(name = "mcp-cli-daemon", about = "Sidecar daemon for MCP-CLI")]

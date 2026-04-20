@@ -84,11 +84,17 @@ Concrete, actionable items. Group headers track milestones in
 
 ## I/O ceiling (M4)
 
-- [ ] Switch global allocator to `mimalloc` behind a feature flag.
+- [x] Switch global allocator to `mimalloc` behind a default-on feature
+      flag (`crates/daemon/Cargo.toml`). Opt out with
+      `cargo build -p daemon --no-default-features` for valgrind /
+      heaptrack / ASan runs.
+- [x] Recyclable `Vec<u8>` `BufferPool` (`crates/daemon/src/buffer_pool.rs`)
+      wired into the per-connection frame reader so request frame
+      buffers are reused across calls instead of allocated per request.
 - [ ] Per-request arena allocator for response building (hot path:
       tree-sitter parse + context assembly).
-- [ ] Pre-allocated, reusable source-read buffer pool to stop
-      re-requesting small pages from the kernel on every `fs.read`.
+- [ ] Extend the buffer pool to additional hot paths (response
+      serialization, parse_cache source reads).
 - [ ] Linux: experiment with `io_uring` for `fs.read` and walker I/O. Gate
       behind `--io-uring`.
 - [ ] Thread-per-core tokio runtime with per-worker `io_uring` rings

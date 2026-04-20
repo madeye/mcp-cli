@@ -41,5 +41,6 @@ tree-sitter-typescript = "0.23"
 tree-sitter-go = "0.23"
 humantime = "2"
 toml_edit = "0.22"
+mimalloc = { version = "0.1", default-features = false }
 
 protocol = { path = "crates/protocol" }

@@ -10,19 +10,27 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Notify;
 
 use crate::backends::{BackendRegistry, TreeSitterBackend};
+use crate::buffer_pool::BufferPool;
 use crate::changelog::ChangeLog;
-use crate::framing::{read_frame, write_frame};
+use crate::framing::{read_frame_into, write_frame, MAX_FRAME};
 use crate::handlers;
 use crate::parse_cache::ParseCache;
 use crate::prewarm;
 use crate::search_cache::SearchCache;
 use crate::watcher::{self, WatchHandle};
 
+/// Cap on recycled frame buffers above which `BufferPool` drops storage
+/// instead of recycling. 256 KiB covers every request payload we've
+/// seen in practice (most are <4 KiB JSON); the cap exists so a stray
+/// near-`MAX_FRAME` request can't bloat the pool's resident memory.
+const FRAME_BUFFER_RECYCLE_CAP: usize = 256 * 1024;
+
 pub struct Daemon {
     pub root: PathBuf,
     pub changelog: Arc<ChangeLog>,
     pub search_cache: Arc<SearchCache>,
     pub backends: BackendRegistry,
+    pub frame_pool: Arc<BufferPool>,
 }
 
 pub struct Config {
@@ -59,11 +67,16 @@ pub async fn serve(cfg: Config) -> Result<()> {
     // of this so they get first refusal on the languages they cover.
     let mut backends = BackendRegistry::new();
     backends.register(Arc::new(TreeSitterBackend::new(parse_cache.clone())));
+    // Pool size = a small multiple of the expected concurrent-bridge
+    // count; one entry per in-flight request frame is enough. Buffers
+    // beyond FRAME_BUFFER_RECYCLE_CAP are dropped on return.
+    let frame_pool = Arc::new(BufferPool::new(32, FRAME_BUFFER_RECYCLE_CAP));
     let daemon = Arc::new(Daemon {
         root: cfg.root,
         changelog,
         search_cache,
         backends,
+        frame_pool,
     });
 
     let idle = Arc::new(IdleTracker::new(cfg.idle_timeout));
@@ -182,8 +195,18 @@ impl IdleTracker {
 async fn handle_conn(mut stream: UnixStream, daemon: Arc<Daemon>) -> Result<()> {
     let (read_half, mut write_half) = stream.split();
     let mut reader = tokio::io::BufReader::new(read_half);
+    // Sanity: the recycle cap is meaningful only if it's well below the
+    // hard frame limit, otherwise the pool would keep oversize buffers
+    // anyway. Asserted at startup of every connection (cheap) instead of
+    // a const_assert! because MAX_FRAME is a runtime u32.
+    debug_assert!(FRAME_BUFFER_RECYCLE_CAP < MAX_FRAME as usize);
 
-    while let Some(frame) = read_frame(&mut reader).await? {
+    loop {
+        let mut frame = daemon.frame_pool.acquire();
+        if read_frame_into(&mut reader, &mut frame).await?.is_none() {
+            return Ok(());
+        }
+
         let req: Request = match serde_json::from_slice(&frame) {
             Ok(r) => r,
             Err(e) => {
@@ -198,11 +221,15 @@ async fn handle_conn(mut stream: UnixStream, daemon: Arc<Daemon>) -> Result<()> 
             }
         };
 
+        // Drop the frame buffer back into the pool before dispatch so
+        // the next concurrent connection on this daemon can pick it up
+        // without waiting for our response to serialize.
+        drop(frame);
+
         let resp = dispatch(&daemon, req).await;
         let payload = serde_json::to_vec(&resp)?;
         write_frame(&mut write_half, &payload).await?;
     }
-    Ok(())
 }
 
 async fn dispatch(daemon: &Daemon, req: Request) -> Response {

@@ -1,9 +1,28 @@
 use anyhow::{anyhow, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-const MAX_FRAME: u32 = 16 * 1024 * 1024;
+pub const MAX_FRAME: u32 = 16 * 1024 * 1024;
 
+/// Convenience wrapper around `read_frame_into` for callers that don't
+/// recycle buffers. Production paths use `read_frame_into` directly with
+/// a pooled `Vec<u8>`; this is mainly here for tests.
+#[cfg(test)]
 pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Vec<u8>>> {
+    let mut buf = Vec::new();
+    match read_frame_into(reader, &mut buf).await? {
+        Some(()) => Ok(Some(buf)),
+        None => Ok(None),
+    }
+}
+
+/// Length-prefixed frame read into a caller-owned buffer. The buffer
+/// is `clear`ed and resized to the frame length; callers can pass a
+/// recycled `Vec<u8>` from `BufferPool` to avoid per-request allocation.
+/// Returns `Ok(None)` on a clean EOF before the length prefix.
+pub async fn read_frame_into<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+) -> Result<Option<()>> {
     let mut len_buf = [0u8; 4];
     match reader.read_exact(&mut len_buf).await {
         Ok(_) => {}
@@ -14,9 +33,10 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<V
     if len > MAX_FRAME {
         return Err(anyhow!("frame too large: {len}"));
     }
-    let mut buf = vec![0u8; len as usize];
-    reader.read_exact(&mut buf).await?;
-    Ok(Some(buf))
+    buf.clear();
+    buf.resize(len as usize, 0);
+    reader.read_exact(buf.as_mut_slice()).await?;
+    Ok(Some(()))
 }
 
 pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, payload: &[u8]) -> Result<()> {
@@ -98,5 +118,43 @@ mod tests {
         let mut cursor = Cursor::new(Vec::<u8>::new());
         let frame = read_frame(&mut cursor).await.unwrap();
         assert!(frame.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_frame_into_reuses_buffer_storage() {
+        // Fill a buffer with one frame, then read a smaller frame into
+        // the same buffer; the second read must not allocate fresh
+        // storage if the existing capacity already covers it.
+        let mut bytes: Vec<u8> = Vec::new();
+        write_frame(&mut bytes, &vec![0xCDu8; 1024]).await.unwrap();
+        write_frame(&mut bytes, b"tiny").await.unwrap();
+        let mut cursor = Cursor::new(bytes);
+
+        let mut buf: Vec<u8> = Vec::new();
+        assert!(read_frame_into(&mut cursor, &mut buf)
+            .await
+            .unwrap()
+            .is_some());
+        let cap_after_first = buf.capacity();
+        assert!(cap_after_first >= 1024);
+
+        assert!(read_frame_into(&mut cursor, &mut buf)
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(&buf[..], b"tiny");
+        // The second read must not have shrunk capacity — the whole
+        // point of the API is to reuse the existing allocation.
+        assert_eq!(buf.capacity(), cap_after_first);
+    }
+
+    #[tokio::test]
+    async fn read_frame_into_eof_clean_yields_none() {
+        let mut cursor = Cursor::new(Vec::<u8>::new());
+        let mut buf: Vec<u8> = Vec::new();
+        assert!(read_frame_into(&mut cursor, &mut buf)
+            .await
+            .unwrap()
+            .is_none());
     }
 }

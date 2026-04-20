@@ -109,13 +109,15 @@ the kernel, and reduce time spent in the allocator.
 
 **Allocator side — pooled buffers, per-request arenas.**
 
-* `mimalloc` as the global allocator.
-* Pre-allocated, reusable source-read buffer pool sized to cover common
-  file sizes; avoids repeatedly asking the kernel for small pages on every
-  `fs.read`.
+* `mimalloc` as the global allocator. **landed** behind the daemon's
+  default-on `mimalloc` feature flag; `--no-default-features` falls
+  back to the system allocator for profiling tools.
+* Pre-allocated, reusable buffer pool (`buffer_pool.rs`). **landed**
+  for per-connection request frames; future work extends it to the
+  response-serialization path and parse-cache source reads.
 * Arena allocators per request, freed in a single drop at end of dispatch
   — particularly important for tree-sitter parses and large context
-  assembly, where per-object `free` pressure dominates otherwise.
+  assembly, where per-object `free` pressure dominates otherwise. (pending)
 
 ## M5 - Multi-client + lifecycle (pending)
 

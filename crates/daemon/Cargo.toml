@@ -34,6 +34,15 @@ tree-sitter-cpp.workspace = true
 tree-sitter-typescript.workspace = true
 tree-sitter-go.workspace = true
 humantime.workspace = true
+mimalloc = { workspace = true, optional = true }
+
+[features]
+# Default-on. Mimalloc beats the system allocator for the daemon's
+# tree-sitter / hashmap / vec-heavy workload by enough to be worth the
+# binary-size cost; opt out with `--no-default-features` if you need
+# the system allocator (e.g. for valgrind, heaptrack, or AddressSanitizer).
+default = ["mimalloc"]
+mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
 tempfile.workspace = true
