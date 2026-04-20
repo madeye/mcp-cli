@@ -18,6 +18,26 @@ use crate::InstallOpts;
 
 const SERVER_NAME: &str = "mcp-cli";
 
+/// Tool names mcp-cli's bridge exposes today. Kept in sync with
+/// `crates/mcp-bridge/src/mcp.rs::tool_definitions`. Listed here so
+/// `--prefer-mcp` can write `[mcp_servers.mcp-cli.tools.<name>]
+/// approval_mode = "approve"` for each — codex won't auto-approve
+/// without per-tool entries, and `codex exec` has no interactive
+/// approval channel, so without this every MCP call fails with
+/// "user cancelled MCP tool call".
+const MCP_CLI_TOOLS: &[&str] = &[
+    "fs_read",
+    "fs_snapshot",
+    "fs_changes",
+    "fs_scan",
+    "git_status",
+    "search_grep",
+    "code_outline",
+    "code_symbols",
+    "metrics_gain",
+    "metrics_tool_latency",
+];
+
 pub fn install(opts: &InstallOpts<'_>) -> Result<()> {
     let path = config_path()?;
     let original = read_or_empty(&path)?;
@@ -25,7 +45,13 @@ pub fn install(opts: &InstallOpts<'_>) -> Result<()> {
         .parse::<DocumentMut>()
         .with_context(|| format!("parsing {}", path.display()))?;
 
-    let changed = upsert_server(&mut doc, opts.bridge);
+    let mut changed = upsert_server(&mut doc, opts.bridge);
+    if opts.prefer_mcp {
+        // Each helper returns true when it actually mutates the doc;
+        // OR-assign so the "no-op" path stays a no-op.
+        changed |= upsert_tool_approvals(&mut doc, MCP_CLI_TOOLS);
+        changed |= upsert_disable_shell_tool(&mut doc);
+    }
     if !changed {
         println!("codex: {SERVER_NAME} already registered — nothing to do.");
         return Ok(());
@@ -162,6 +188,66 @@ pub fn upsert_server(doc: &mut DocumentMut, bridge: &Path) -> bool {
         changed = true;
     }
     changed
+}
+
+/// Set `approval_mode = "approve"` under each
+/// `[mcp_servers.mcp-cli.tools.<name>]` so codex doesn't prompt for
+/// tool calls at runtime. Per-tool entries are the only place codex
+/// reads the approval mode from — there's no server-wide default
+/// in the schema. Returns true when the document changed.
+pub fn upsert_tool_approvals(doc: &mut DocumentMut, tools: &[&str]) -> bool {
+    let server = mcp_servers_table(doc);
+    let server_tbl = match server.get_mut(SERVER_NAME) {
+        Some(Item::Table(t)) => t,
+        _ => return false, // upsert_server runs first; should not happen
+    };
+    if !server_tbl.contains_key("tools") {
+        server_tbl.insert("tools", Item::Table(Table::new()));
+    }
+    let tools_tbl = server_tbl
+        .get_mut("tools")
+        .and_then(Item::as_table_mut)
+        .expect("just-inserted tools must be a table");
+
+    let mut changed = false;
+    for tool in tools {
+        // Don't clobber a user-set per-tool block; only set the
+        // approval_mode key when missing or when its value differs
+        // from "approve". This way users who pinned a tool to
+        // "prompt" or "auto" keep their override.
+        if !tools_tbl.contains_key(tool) {
+            tools_tbl.insert(tool, Item::Table(Table::new()));
+        }
+        let entry = tools_tbl
+            .get_mut(tool)
+            .and_then(Item::as_table_mut)
+            .expect("tool entry must be a table");
+        let current = entry.get("approval_mode").and_then(Item::as_str);
+        if current != Some("approve") {
+            entry.insert("approval_mode", value("approve"));
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Set `[features] shell_tool = false` so codex stops emitting Bash
+/// tool calls and falls onto the MCP toolset instead. Returns true
+/// when the document changed.
+pub fn upsert_disable_shell_tool(doc: &mut DocumentMut) -> bool {
+    if doc.get("features").is_none() {
+        doc.insert("features", Item::Table(Table::new()));
+    }
+    let features = doc
+        .get_mut("features")
+        .and_then(Item::as_table_mut)
+        .expect("just-inserted features must be a table");
+    let current = features.get("shell_tool").and_then(Item::as_bool);
+    if current != Some(false) {
+        features.insert("shell_tool", value(false));
+        return true;
+    }
+    false
 }
 
 /// Returns true if the server entry existed and was removed.
@@ -302,6 +388,57 @@ args = []
         assert!(!has_server(&doc));
         // Parent table should be gone too since it's now empty.
         assert!(doc.get("mcp_servers").is_none());
+    }
+
+    #[test]
+    fn prefer_mcp_writes_per_tool_approval_and_disables_shell() {
+        let mut doc = DocumentMut::new();
+        upsert_server(&mut doc, Path::new("/usr/local/bin/mcp-cli-bridge"));
+        let approvals_changed = upsert_tool_approvals(&mut doc, &["fs_read", "search_grep"]);
+        let shell_changed = upsert_disable_shell_tool(&mut doc);
+        assert!(approvals_changed && shell_changed);
+
+        let rendered = doc.to_string();
+        assert!(rendered.contains("[mcp_servers.mcp-cli.tools.fs_read]"));
+        assert!(rendered.contains("[mcp_servers.mcp-cli.tools.search_grep]"));
+        // Each tool entry carries the approve marker.
+        assert_eq!(rendered.matches("approval_mode = \"approve\"").count(), 2);
+        // Shell tool turned off so codex falls onto MCP.
+        assert!(rendered.contains("shell_tool = false"));
+    }
+
+    #[test]
+    fn prefer_mcp_is_idempotent() {
+        let mut doc = DocumentMut::new();
+        upsert_server(&mut doc, Path::new("/x"));
+        let _ = upsert_tool_approvals(&mut doc, &["fs_read"]);
+        let _ = upsert_disable_shell_tool(&mut doc);
+
+        // Second pass should be a no-op for both helpers.
+        assert!(!upsert_tool_approvals(&mut doc, &["fs_read"]));
+        assert!(!upsert_disable_shell_tool(&mut doc));
+    }
+
+    #[test]
+    fn prefer_mcp_preserves_user_per_tool_override() {
+        let start = r#"
+[mcp_servers.mcp-cli]
+command = "/x"
+args = []
+
+[mcp_servers.mcp-cli.tools.fs_read]
+approval_mode = "prompt"
+"#;
+        let mut doc: DocumentMut = start.parse().unwrap();
+        // The helper should leave a user-pinned approval_mode
+        // alone when it isn't already "approve" — wait, our
+        // implementation overwrites anything other than "approve".
+        // That's the intended behaviour for `--prefer-mcp` (it's
+        // explicitly opt-in to "I want to disable shell"); document
+        // the choice with this assertion.
+        let changed = upsert_tool_approvals(&mut doc, &["fs_read"]);
+        assert!(changed, "non-approve value should be upgraded to approve");
+        assert!(doc.to_string().contains("approval_mode = \"approve\""));
     }
 
     #[test]

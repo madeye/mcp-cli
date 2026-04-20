@@ -33,6 +33,17 @@ enum Command {
         /// Skip writing; just show what would change.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+
+        /// Bias the agent toward the mcp-cli MCP tools by also
+        /// disabling the agent's built-in shell tool, so cat / grep /
+        /// git / etc. invocations have to go through MCP. Currently
+        /// only honoured by the `codex` target — sets
+        /// `[features] shell_tool = false` in `~/.codex/config.toml`.
+        /// Without this, codex will mount mcp-cli but still prefer
+        /// Bash for everything (which is what the M5 benchmark
+        /// surfaced).
+        #[arg(long, default_value_t = false)]
+        prefer_mcp: bool,
     },
     /// Remove the mcp-cli registration from agent(s).
     Uninstall {
@@ -79,11 +90,13 @@ fn main() -> Result<()> {
             target,
             bridge_path,
             dry_run,
+            prefer_mcp,
         } => {
             let bridge = resolve_bridge_path(bridge_path)?;
             let opts = InstallOpts {
                 bridge: &bridge,
                 dry_run,
+                prefer_mcp,
             };
             run_each(target, |t| match t {
                 Target::ClaudeCode => claude_code::install(&opts),
@@ -107,6 +120,10 @@ fn main() -> Result<()> {
 pub struct InstallOpts<'a> {
     pub bridge: &'a std::path::Path,
     pub dry_run: bool,
+    /// When true, install also configures the target agent to prefer
+    /// the mcp-cli MCP tools over its own built-in shell. See the
+    /// `--prefer-mcp` flag documentation on `Install` for details.
+    pub prefer_mcp: bool,
 }
 
 fn run_each<F>(target: Target, mut f: F) -> Result<()>
