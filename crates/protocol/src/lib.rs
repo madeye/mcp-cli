@@ -39,6 +39,7 @@ impl RpcError {
 pub mod methods {
     pub const PING: &str = "ping";
     pub const FS_READ: &str = "fs.read";
+    pub const FS_READ_BATCH: &str = "fs.read_batch";
     pub const FS_SNAPSHOT: &str = "fs.snapshot";
     pub const FS_CHANGES: &str = "fs.changes";
     pub const FS_SCAN: &str = "fs.scan";
@@ -66,6 +67,46 @@ pub struct FsReadResult {
     pub total_size: u64,
     pub content: String,
     pub truncated: bool,
+}
+
+// ---- fs.read_batch ------------------------------------------------------
+
+/// Batch multiple `fs.read` calls into a single RPC round-trip.
+///
+/// The M5 benchmark showed codex scroll-paging through large files
+/// (six reads of `mcp_connection_manager.rs` at different offsets,
+/// five reads of `exec.rs`, …) — each read was its own MCP turn, each
+/// turn paid model-reasoning latency. Batching folds those N turns
+/// into one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsReadBatchParams {
+    /// Read requests, processed in order. Each maps 1:1 onto a
+    /// `FsReadResult` entry in the response (or an `error` when that
+    /// specific request fails). Per-request failures do not abort the
+    /// batch.
+    pub requests: Vec<FsReadParams>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsReadBatchResult {
+    pub responses: Vec<FsReadBatchItem>,
+}
+
+/// One entry per input request. Exactly one of `result` / `error` is
+/// set — mirroring `Result<FsReadResult, RpcError>` with the verbose
+/// serde shape collapsed into two optional fields so the JSON stays
+/// small.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsReadBatchItem {
+    /// Echoes the request's `path` so the caller can correlate
+    /// responses back to inputs even if they were re-ordered before
+    /// serialization (today we preserve order, but clients shouldn't
+    /// have to rely on positional matching).
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<FsReadResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<RpcError>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

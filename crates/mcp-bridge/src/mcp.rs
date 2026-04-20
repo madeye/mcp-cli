@@ -111,6 +111,7 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
 
     let daemon_method = match name {
         "fs_read" => protocol::methods::FS_READ,
+        "fs_read_batch" => protocol::methods::FS_READ_BATCH,
         "fs_snapshot" => protocol::methods::FS_SNAPSHOT,
         "fs_changes" => protocol::methods::FS_CHANGES,
         "fs_scan" => protocol::methods::FS_SCAN,
@@ -119,6 +120,7 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
         "code_outline" => protocol::methods::CODE_OUTLINE,
         "code_symbols" => protocol::methods::CODE_SYMBOLS,
         "metrics_gain" => protocol::methods::METRICS_GAIN,
+        "metrics_tool_latency" => protocol::methods::METRICS_TOOL_LATENCY,
         other => return Err(anyhow::anyhow!("unknown tool: {other}")),
     };
 
@@ -134,7 +136,7 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "fs_read",
-            "description": "Read a file from the project root via the daemon's mmap-backed VFS.",
+            "description": "Read a file from the project root via the daemon's mmap-backed VFS. For reading multiple files, or multiple regions of the same file (e.g. paging through a large source file), PREFER `fs_read_batch` — one MCP round-trip beats N in wall-clock. For files larger than ~20 KB, consider calling `code_outline` first to find the relevant span instead of scroll-paging.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -143,6 +145,29 @@ fn tool_definitions() -> Value {
                     "length": {"type": "integer", "minimum": 1, "description": "Bytes to read; default 256 KiB."}
                 },
                 "required": ["path"]
+            }
+        },
+        {
+            "name": "fs_read_batch",
+            "description": "Read many files (or many regions of the same file) in a single MCP call. Each request in the list is an `fs_read` spec — `{path, offset?, length?}`. The response is a parallel list of `{path, result?, error?}` entries; per-request failures do not abort the batch. Strongly preferred over N separate `fs_read` calls when the paths are known upfront.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "requests": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                                "length": {"type": "integer", "minimum": 1}
+                            },
+                            "required": ["path"]
+                        },
+                        "minItems": 1
+                    }
+                },
+                "required": ["requests"]
             }
         },
         {
@@ -224,6 +249,11 @@ fn tool_definitions() -> Value {
         {
             "name": "metrics_gain",
             "description": "Per-tool byte-savings counters: how many bytes the daemon would have shipped (raw_bytes) vs. how many it actually serialized (compacted_bytes), with a session-wide savings ratio. Useful for the agent to verify its compact-mode requests are paying off.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "metrics_tool_latency",
+            "description": "Per-tool daemon-side wall-clock counters (calls, sum / mean / max in microseconds) across every RPC dispatched this session. Paired with `metrics_gain` so agents and the M5 benchmark can check that fork/exec saved actually translates to wall-clock saved per call.",
             "inputSchema": {"type": "object", "properties": {}}
         }
     ])

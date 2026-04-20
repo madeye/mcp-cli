@@ -7,9 +7,10 @@ use ignore::WalkBuilder;
 use memmap2::Mmap;
 use protocol::{
     CodeOutlineParams, CodeOutlineResult, CodeSymbolsParams, CodeSymbolsResult, FsChangesParams,
-    FsChangesResult, FsReadParams, FsReadResult, FsScanParams, FsScanResult, FsSnapshotResult,
-    GitStatusEntry, GitStatusParams, GitStatusResult, MetricsGainParams, MetricsToolLatencyParams,
-    RpcError, SearchGrepParams, SearchGrepResult, SearchHit,
+    FsChangesResult, FsReadBatchItem, FsReadBatchParams, FsReadBatchResult, FsReadParams,
+    FsReadResult, FsScanParams, FsScanResult, FsSnapshotResult, GitStatusEntry, GitStatusParams,
+    GitStatusResult, MetricsGainParams, MetricsToolLatencyParams, RpcError, SearchGrepParams,
+    SearchGrepResult, SearchHit,
 };
 
 use crate::compact;
@@ -28,6 +29,48 @@ const SEARCH_DEFAULT_LIMIT: usize = 200;
 pub fn fs_read(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
     let params: FsReadParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let result = fs_read_inner(daemon, &params)?;
+    Ok(serde_json::to_value(result).unwrap())
+}
+
+pub fn fs_read_batch(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: FsReadBatchParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    // Serialize the reads (no per-file locking needed — mmap is
+    // read-only, and tokio's single-threaded cooperative model means
+    // parallelism here would just bounce blocking syscalls across
+    // worker threads without real wins on the mmap fast path).
+    // Per-request failures become `FsReadBatchItem.error` entries; the
+    // batch itself only fails for malformed top-level params.
+    let responses = params
+        .requests
+        .into_iter()
+        .map(|req| {
+            let path = req.path.clone();
+            match fs_read_inner(daemon, &req) {
+                Ok(r) => FsReadBatchItem {
+                    path,
+                    result: Some(r),
+                    error: None,
+                },
+                Err(e) => FsReadBatchItem {
+                    path,
+                    result: None,
+                    error: Some(e),
+                },
+            }
+        })
+        .collect();
+    Ok(serde_json::to_value(FsReadBatchResult { responses }).unwrap())
+}
+
+/// Shared core for `fs_read` and `fs_read_batch`. Takes the parsed
+/// params (no JSON round-trip per batch item) and returns the
+/// structured result; callers JSON-encode at their own layer.
+fn fs_read_inner(daemon: &Daemon, params: &FsReadParams) -> Result<FsReadResult, RpcError> {
     let path = resolve_within(&daemon.root, &params.path)?;
 
     let file = File::open(&path).map_err(|e| RpcError::new(-32010, format!("open: {e}")))?;
@@ -37,14 +80,13 @@ pub fn fs_read(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json:
         .len();
 
     if total_size == 0 {
-        return Ok(serde_json::to_value(FsReadResult {
-            path: params.path,
+        return Ok(FsReadResult {
+            path: params.path.clone(),
             bytes_read: 0,
             total_size: 0,
             content: String::new(),
             truncated: false,
-        })
-        .unwrap());
+        });
     }
 
     // Safe: we only read the mapping; another process modifying the file mid-read
@@ -63,14 +105,13 @@ pub fn fs_read(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json:
 
     let content = String::from_utf8_lossy(slice).into_owned();
     let truncated = end < total_size;
-    Ok(serde_json::to_value(FsReadResult {
-        path: params.path,
+    Ok(FsReadResult {
+        path: params.path.clone(),
         bytes_read: limit,
         total_size,
         content,
         truncated,
     })
-    .unwrap())
 }
 
 pub fn fs_snapshot(

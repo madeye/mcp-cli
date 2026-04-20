@@ -143,6 +143,63 @@ fn run_exchange(child: &mut Child, project_root: &Path) {
         "unexpected fs_read path: {inner}"
     );
 
+    // Batch read: exercise fs_read_batch end-to-end, including per-item
+    // error handling when one of the paths doesn't exist. The second
+    // request points at a sibling file we seed here, the third is
+    // a deliberately-missing path so we can verify error isolation.
+    std::fs::write(project_root.join("other.txt"), b"second file\n").expect("seed other");
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "fs_read_batch",
+                "arguments": {
+                    "requests": [
+                        {"path": "hello.txt"},
+                        {"path": "other.txt"},
+                        {"path": "does-not-exist.txt"},
+                    ]
+                },
+            },
+        }),
+    );
+    let batch = read_response(&mut reader, 4);
+    let btext = batch
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("fs_read_batch missing content text: {batch}"));
+    let binner: Value =
+        serde_json::from_str(btext).unwrap_or_else(|e| panic!("batch JSON parse: {e}: {btext}"));
+    let responses = binner
+        .get("responses")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("fs_read_batch missing responses[]: {binner}"));
+    assert_eq!(responses.len(), 3, "expected 3 response entries: {binner}");
+
+    let first_content = responses[0]
+        .pointer("/result/content")
+        .and_then(Value::as_str);
+    assert_eq!(first_content, Some("hello world\n"), "entry 0: {binner}");
+
+    let second_content = responses[1]
+        .pointer("/result/content")
+        .and_then(Value::as_str);
+    assert_eq!(second_content, Some("second file\n"), "entry 1: {binner}");
+
+    // Third request: missing file → error entry, no crash, other
+    // responses still delivered.
+    assert!(
+        responses[2].get("error").is_some(),
+        "entry 2 should carry an error object: {binner}"
+    );
+    assert!(
+        responses[2].get("result").is_none() || responses[2].get("result") == Some(&Value::Null),
+        "entry 2 should not carry a result: {binner}"
+    );
+
     // Give the ring buffer a beat to register our connection as active
     // so the idle timer doesn't win the race against test teardown.
     std::thread::sleep(Duration::from_millis(50));

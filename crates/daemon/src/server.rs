@@ -270,6 +270,7 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
             Ok(serde_json::json!({"ok": true, "version": protocol::PROTOCOL_VERSION}))
         }
         protocol::methods::FS_READ => handlers::fs_read(daemon, req.params),
+        protocol::methods::FS_READ_BATCH => handlers::fs_read_batch(daemon, req.params),
         protocol::methods::FS_SNAPSHOT => handlers::fs_snapshot(daemon, req.params),
         protocol::methods::FS_CHANGES => handlers::fs_changes(daemon, req.params),
         protocol::methods::FS_SCAN => handlers::fs_scan(daemon, req.params),
