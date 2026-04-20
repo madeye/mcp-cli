@@ -105,7 +105,34 @@ Concrete, actionable items. Group headers track milestones in
       socket for responses above the threshold, skipping the JSON
       round-trip entirely.
 
-## Lifecycle (M5)
+## Codex fork/exec reduction benchmark (M5)
+
+Reproducible measurement that the daemon actually erases per-call
+kernel overhead. Lives under `bench/codex-forkexec/`.
+
+- [ ] `bench/codex-forkexec/run.sh` orchestrator: clone Codex at
+      its latest release tag into a tempdir, run the analysis prompt
+      twice (with and without the mcp-cli plugin), capture per-run
+      strace / dtruss output + Codex stdout.
+- [ ] `bench/codex-forkexec/prompt.md`: the analysis task asking
+      Codex to identify three concrete performance enhancements in
+      its own source tree, with file/line citations.
+- [ ] `bench/codex-forkexec/parse_trace.py`: count `execve` events
+      per binary from a trace file; emit JSON.
+- [ ] `bench/codex-forkexec/compare.py`: tabulate baseline vs
+      with-mcp counts (overall + per-binary delta) and absolute
+      wall-clock + token deltas.
+- [ ] Per-tool daemon-side latency counters (`metrics.tool_latency`)
+      so the benchmark can also assert no per-call regression — a
+      fork/exec saved that costs the same wall-clock isn't a win.
+- [ ] CI job (manual / weekly) that runs the benchmark on a
+      controlled runner with Codex pre-installed and posts the
+      comparison table as a PR comment.
+- [ ] macOS support beyond the Linux baseline: `dtruss` requires
+      root, document the workflow and gate the script on
+      `id -u == 0` for the trace step.
+
+## Lifecycle (M6)
 
 (Auto-spawn + per-cwd socket routing moved to M3 under "Drop-in
 install". What remains here is hardening + optional system integration.)
