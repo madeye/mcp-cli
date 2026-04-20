@@ -203,16 +203,8 @@ fn run_exchange(child: &mut Child, project_root: &Path) {
     // code_symbols_batch: hits the daemon's tree-sitter backend over
     // two real source files, plus one path that doesn't exist to
     // exercise per-item error isolation.
-    std::fs::write(
-        project_root.join("a.rs"),
-        b"fn alpha() {}\nstruct Beta;\n",
-    )
-    .expect("seed a.rs");
-    std::fs::write(
-        project_root.join("b.rs"),
-        b"fn gamma() {}\n",
-    )
-    .expect("seed b.rs");
+    std::fs::write(project_root.join("a.rs"), b"fn alpha() {}\nstruct Beta;\n").expect("seed a.rs");
+    std::fs::write(project_root.join("b.rs"), b"fn gamma() {}\n").expect("seed b.rs");
     send(
         &mut stdin,
         &json!({
@@ -236,8 +228,7 @@ fn run_exchange(child: &mut Child, project_root: &Path) {
         .pointer("/result/content/0/text")
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("code_symbols_batch missing content text: {symbatch}"));
-    let syminner: Value =
-        serde_json::from_str(symtext).expect("parse code_symbols_batch result");
+    let syminner: Value = serde_json::from_str(symtext).expect("parse code_symbols_batch result");
     let symresps = syminner
         .get("responses")
         .and_then(Value::as_array)
