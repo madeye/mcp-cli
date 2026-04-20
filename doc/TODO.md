@@ -41,6 +41,35 @@ Concrete, actionable items. Group headers track milestones in
 - [ ] Backend health: detect crashes, auto-respawn, surface errors as RPC
       errors instead of dropping the connection.
 
+## Drop-in install + per-cwd auto-spawn (M3)
+
+- [ ] `mcp-cli install` subcommand (probably a new `mcp-cli` wrapper
+      binary alongside `mcp-cli-daemon`/`mcp-cli-bridge`). Flags:
+      `--target claude-code | codex | all` (default `all`).
+    - [ ] Claude Code: shell out to `claude mcp add mcp-cli <path>`;
+          skip if `claude mcp list` already has it. Surface the CLI's
+          exit code on failure.
+    - [ ] Codex: read `~/.codex/config.toml`, merge a
+          `[mcp_servers.mcp-cli]` entry, write back. Preserve
+          user-authored keys; idempotent on re-run.
+    - [ ] Print a diff of what changed in each target's config.
+    - [ ] `--uninstall` inverse (remove the registration).
+- [ ] Bridge: default `--root` to `std::env::current_dir()` when not
+      passed, so the agent's cwd becomes the project root.
+- [ ] Derive per-cwd socket path. Hash the canonicalized cwd; use
+      `$XDG_RUNTIME_DIR/mcp-cli/<hash>.sock` on Linux, fall back to
+      `/tmp/mcp-cli-<user>-<hash>.sock` elsewhere. Mode 0600.
+- [ ] Bridge auto-spawn: on `ENOENT`/`ECONNREFUSED`, fork+exec
+      `mcp-cli-daemon --root <cwd> --socket <derived>`, detach with
+      `setsid`, and retry-connect with ~25ms backoff up to ~2s before
+      erroring. Background stdout/stderr to a per-cwd log under the
+      same directory as the socket.
+- [ ] Daemon `--idle-timeout <duration>` (default 30m; `0` disables).
+      Track last-connected time; exit cleanly when idle elapsed.
+- [ ] End-to-end smoke test: start bridge from a tempdir cwd, issue a
+      `tools/call fs_read`, verify a daemon was spawned with the right
+      `--root`, kill it, confirm the socket is cleaned up.
+
 ## I/O ceiling (M4)
 
 - [ ] Switch global allocator to `mimalloc` behind a feature flag.
@@ -60,11 +89,16 @@ Concrete, actionable items. Group headers track milestones in
 
 ## Lifecycle (M5)
 
-- [ ] Bridge: detect daemon-dead, retry-connect with backoff, surface a
-      clean MCP error if the daemon is unreachable.
-- [ ] Optional auto-spawn of the daemon from the bridge if the socket
-      doesn't exist.
-- [ ] systemd user-service unit + launchd plist examples.
+(Auto-spawn + per-cwd socket routing moved to M3 under "Drop-in
+install". What remains here is hardening + optional system integration.)
+
+- [ ] Bridge: detect daemon-dead mid-session, retry-connect with backoff,
+      fall through to the M3 auto-spawn path on `ECONNREFUSED` rather
+      than failing the call.
+- [ ] Multi-bridge contention test: N bridges driving one daemon,
+      verify fair scheduling and no per-bridge starvation.
+- [ ] systemd user-service unit + launchd plist examples for users
+      who prefer an always-on daemon over demand-spawn.
 
 ## Integration strategies (parallel tracks)
 

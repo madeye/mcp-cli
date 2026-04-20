@@ -43,7 +43,13 @@ Goal: make `search.grep` and future semantic queries cheap on cold caches.
   by per-language tree-sitter queries (`languages.rs` / `outline.rs`).
   Supported: rust, python, c, cpp, typescript, tsx, go.
 
-## M3 - Language backends (next)
+## M3 - Language backends + drop-in install (next)
+
+Two independent tracks, both landing in M3. The language work makes the
+daemon *smarter*; the install work makes it something a user can actually
+adopt in under 30 seconds.
+
+### Language backends
 
 Plug-in shape: a backend is `trait LanguageBackend` with `outline`,
 `definition`, `references`, `diagnostics`. The daemon owns one
@@ -52,10 +58,50 @@ backend instance per language and routes requests.
 * Rust: shell out (once, long-lived) to `rust-analyzer` over its LSP, cache
   responses keyed on `ChangeLog` version.
 * C++: same pattern with `clangd`, plus auto-discover `compile_commands.json`.
-* Pure-text languages: tree-sitter only.
+* Pure-text languages: tree-sitter only (already landed in M2).
 
 The cost of `rust-analyzer` startup is paid once per project, not once per
 agent turn — that is the whole point of the daemon.
+
+### Drop-in install + per-project auto-spawn
+
+Today the daemon + bridge split is correct architecturally but unfriendly:
+a user has to (a) launch `mcp-cli-daemon` with the right `--root`, (b)
+keep it running, and (c) hand-edit each agent's MCP config to register
+the bridge. M3 collapses all three into a single command.
+
+**End state.** `mcp-cli install` once, globally. After that, any
+`claude` / `codex` session started from *any* project directory gets a
+warm daemon for that project on demand. No systemd unit, no
+`mcp-cli-daemon &`, no config editing per project.
+
+* **One-command registration.** A new `mcp-cli install [--target claude-code|codex|all]`
+  subcommand writes the bridge registration into each agent's native
+  config surface:
+  * Claude Code — shell out to `claude mcp add mcp-cli <path-to-bridge>`
+    (idempotent; `claude mcp list` tells us if it's already there).
+  * Codex — patch `~/.codex/config.toml`'s `[mcp_servers]` table.
+  * Idempotent on both paths; prints a diff of what changed.
+* **Per-cwd socket.** The bridge derives a deterministic socket path
+  from the current working directory (hash of the canonicalized cwd,
+  placed under `$XDG_RUNTIME_DIR` on Linux or `/tmp/mcp-cli-<user>-<hash>.sock`
+  on macOS, mode 0600). Different projects → different sockets → different
+  daemons, with zero user thought.
+* **Bridge auto-spawn.** On first call, if connecting to the derived
+  socket fails with `ENOENT` / `ECONNREFUSED`, the bridge forks and execs
+  `mcp-cli-daemon --root <cwd> --socket <derived>`, detaches, and
+  retry-connects with short backoff (~25 ms up to ~2 s). The agent never
+  sees this — its first `tools/call` just works.
+* **Default `--root = $PWD`.** The bridge picks up the agent's cwd as
+  the project root. Agents spawn stdio MCP servers in the user's working
+  directory, so this gives the right root without any per-project config.
+* **Idle-exit on the daemon.** A `--idle-timeout` flag (default e.g.
+  30 min, `0` disables) makes the daemon exit cleanly when no bridge has
+  been connected for the duration. Pairs with auto-spawn so idle daemons
+  don't linger.
+
+The MCP config file on both agents ends up with a single line pointing
+at the bridge binary — the bridge handles everything else at runtime.
 
 ## M4 - I/O ceiling (pending)
 
@@ -84,10 +130,17 @@ the kernel, and reduce time spent in the allocator.
 
 ## M5 - Multi-client + lifecycle (pending)
 
+Daemon auto-spawn and per-cwd socket routing move up into M3 (see the
+*Drop-in install* track above). What remains here is hardening under
+contention and optional system-integration surface.
+
 * Multiple MCP bridges connected to one daemon (already supported by the
   per-connection task; needs explicit testing under contention).
-* Health check + auto-respawn from the bridge if the daemon went away.
-* Optional systemd / launchd unit files.
+* Health check + reconnect: if the daemon went away mid-session, the
+  bridge should retry-connect and, on `ECONNREFUSED`, fall through to the
+  same M3 auto-spawn path instead of failing the call.
+* Optional systemd / launchd unit files for users who prefer an always-on
+  daemon over demand-spawn.
 
 ## Integration strategies
 
