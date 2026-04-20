@@ -94,6 +94,25 @@ Concrete, actionable items. Group headers track milestones in
 - [ ] Per-request arena allocator for response building (hot path:
       tree-sitter parse + context assembly). Deferred — substantial
       lifetime threading required for `bumpalo` integration.
+
+### Wall-clock regression follow-ups (deferred from PR #21)
+
+The M5 benchmark v5 run brought the regression vs pure-bash baseline
+down from +76 % to +61 % via two server-side reductions
+(`fs_read_batch`, `search_grep ?context`). Two more leverage points
+identified but not pursued in this iteration:
+
+- [ ] Compound `code_symbols_batch` / `code_outline_batch` taking
+      a `paths: Vec<String>` so a multi-file structural pass is one
+      MCP turn. Six `code_symbols` calls in v5 — small target this
+      run, larger target on cross-file refactors.
+- [ ] Cross-session warm cache. Today every bench starts with a
+      cold daemon; a long-lived daemon (the `doc/services/`
+      always-on shape) would amortise `search_grep` LRU and
+      `parse_cache` across agent sessions. The cache code already
+      exists; what's missing is making the bench measure a
+      warm-vs-cold delta as well as the baseline-vs-mcp one.
+- [ ] Once both above land, re-bench and update the README headline.
 - [x] Extend the buffer pool to response serialization. New
       `BufferPool::acquire_with_capacity(min)` method; `handle_conn`'s
       response-write path now goes through `write_response_pooled`
@@ -115,20 +134,23 @@ Concrete, actionable items. Group headers track milestones in
 ## Codex fork/exec reduction benchmark (M5)
 
 Reproducible measurement that the daemon actually erases per-call
-kernel overhead. Lives under `bench/codex-forkexec/`.
+kernel overhead. Lives under `bench/codex-forkexec/`. Five result
+files now under `bench/codex-forkexec/results/`; the
+[v5 run](../bench/codex-forkexec/results/2026-04-20-rust-v0.121.0-search-ctx.md)
+is the current headline.
 
-- [ ] `bench/codex-forkexec/run.sh` orchestrator: clone Codex at
-      its latest release tag into a tempdir, run the analysis prompt
-      twice (with and without the mcp-cli plugin), capture per-run
-      strace / dtruss output + Codex stdout.
-- [ ] `bench/codex-forkexec/prompt.md`: the analysis task asking
-      Codex to identify three concrete performance enhancements in
-      its own source tree, with file/line citations.
-- [ ] `bench/codex-forkexec/parse_trace.py`: count `execve` events
-      per binary from a trace file; emit JSON.
-- [ ] `bench/codex-forkexec/compare.py`: tabulate baseline vs
-      with-mcp counts (overall + per-binary delta) and absolute
-      wall-clock + token deltas.
+- [x] `bench/codex-forkexec/run.sh` orchestrator: clone target at
+      its latest release tag, run the analysis prompt twice
+      (baseline + mcp-cli-plugin), capture per-run trace +
+      stdout. Three tracer backends (strace / dtruss / shim);
+      shim is the macOS-no-root path (PATH-shadow shim wrappers
+      + ZDOTDIR override + sandbox `--add-dir` whitelist).
+- [x] `bench/codex-forkexec/prompt.md`: the analysis task.
+- [x] `bench/codex-forkexec/parse_trace.py`: count `execve`
+      events per binary from each tracer's output.
+- [x] `bench/codex-forkexec/compare.py`: tabulate baseline vs
+      with-mcp deltas (per-binary, wall clock, tokens, MCP tool
+      calls grouped by `server/tool`).
 - [x] Per-tool daemon-side latency counters via the M7 metrics module
       (`crates/daemon/src/metrics.rs`). New `metrics.tool_latency` RPC
       + bridge tool `metrics_tool_latency` returns calls / sum / mean /
