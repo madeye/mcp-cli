@@ -47,6 +47,7 @@ pub mod methods {
     pub const CODE_OUTLINE: &str = "code.outline";
     pub const CODE_SYMBOLS: &str = "code.symbols";
     pub const METRICS_GAIN: &str = "metrics.gain";
+    pub const METRICS_TOOL_LATENCY: &str = "metrics.tool_latency";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,4 +306,30 @@ pub struct ToolGainEntry {
     pub calls: u64,
     pub raw_bytes: u64,
     pub compacted_bytes: u64,
+}
+
+// ---- metrics.tool_latency ------------------------------------------------
+
+/// `metrics.tool_latency` takes no params today; reserved struct for
+/// forward-compat (we may add filtering or a since-cursor later).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetricsToolLatencyParams {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetricsToolLatencyResult {
+    pub per_tool: Vec<ToolLatencyEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolLatencyEntry {
+    /// Method name (e.g. `git.status`, `search.grep`, `fs.read`).
+    pub tool: String,
+    /// Number of dispatched calls observed for this method.
+    pub calls: u64,
+    /// Sum of per-call elapsed time in microseconds. We keep the sum
+    /// so multi-process callers can aggregate without losing precision;
+    /// `mean_us` is the precomputed convenience value.
+    pub latency_sum_us: u64,
+    pub mean_us: u64,
+    pub max_us: u64,
 }

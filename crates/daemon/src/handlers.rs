@@ -8,8 +8,8 @@ use memmap2::Mmap;
 use protocol::{
     CodeOutlineParams, CodeOutlineResult, CodeSymbolsParams, CodeSymbolsResult, FsChangesParams,
     FsChangesResult, FsReadParams, FsReadResult, FsScanParams, FsScanResult, FsSnapshotResult,
-    GitStatusEntry, GitStatusParams, GitStatusResult, MetricsGainParams, RpcError,
-    SearchGrepParams, SearchGrepResult, SearchHit,
+    GitStatusEntry, GitStatusParams, GitStatusResult, MetricsGainParams, MetricsToolLatencyParams,
+    RpcError, SearchGrepParams, SearchGrepResult, SearchHit,
 };
 
 use crate::compact;
@@ -452,4 +452,13 @@ pub fn metrics_gain(
     let _params: MetricsGainParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     Ok(serde_json::to_value(daemon.metrics.snapshot()).unwrap())
+}
+
+pub fn metrics_tool_latency(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let _params: MetricsToolLatencyParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    Ok(serde_json::to_value(daemon.metrics.snapshot_latency()).unwrap())
 }
