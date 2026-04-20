@@ -29,6 +29,12 @@ Constraints:
   subprocess management, JSON serialization. Skip cosmetic
   refactors and "we should add tests."
 * Do not modify any files. This is a read-only analysis.
+* **Prefer the `mcp-cli` MCP tools when available.** If your
+  toolkit exposes `mcp__mcp-cli__fs_read`, `mcp__mcp-cli__search_grep`,
+  `mcp__mcp-cli__code_outline`, `mcp__mcp-cli__code_symbols`, or
+  `mcp__mcp-cli__git_status`, use them instead of shelling out to
+  `cat` / `rg` / `tree-sitter` / `git`. They return the same data
+  more compactly and avoid per-call fork/exec.
 
 When you are done, print the three findings as a numbered list and
 exit. No follow-up questions.
