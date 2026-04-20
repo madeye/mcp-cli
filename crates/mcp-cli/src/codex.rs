@@ -27,13 +27,16 @@ const SERVER_NAME: &str = "mcp-cli";
 /// "user cancelled MCP tool call".
 const MCP_CLI_TOOLS: &[&str] = &[
     "fs_read",
+    "fs_read_batch",
     "fs_snapshot",
     "fs_changes",
     "fs_scan",
     "git_status",
     "search_grep",
     "code_outline",
+    "code_outline_batch",
     "code_symbols",
+    "code_symbols_batch",
     "metrics_gain",
     "metrics_tool_latency",
 ];
@@ -401,15 +404,21 @@ args = []
     fn prefer_mcp_writes_per_tool_approval_and_disables_shell() {
         let mut doc = DocumentMut::new();
         upsert_server(&mut doc, Path::new("/usr/local/bin/mcp-cli-bridge"));
-        let approvals_changed = upsert_tool_approvals(&mut doc, &["fs_read", "search_grep"]);
+        let approvals_changed = upsert_tool_approvals(&mut doc, MCP_CLI_TOOLS);
         let shell_changed = upsert_disable_shell_tool(&mut doc);
         assert!(approvals_changed && shell_changed);
 
         let rendered = doc.to_string();
-        assert!(rendered.contains("[mcp_servers.mcp-cli.tools.fs_read]"));
-        assert!(rendered.contains("[mcp_servers.mcp-cli.tools.search_grep]"));
-        // Each tool entry carries the approve marker.
-        assert_eq!(rendered.matches("approval_mode = \"approve\"").count(), 2);
+        for tool in MCP_CLI_TOOLS {
+            assert!(
+                rendered.contains(&format!("[mcp_servers.mcp-cli.tools.{tool}]")),
+                "missing tool approval block for {tool}:\n{rendered}"
+            );
+        }
+        assert_eq!(
+            rendered.matches("approval_mode = \"approve\"").count(),
+            MCP_CLI_TOOLS.len()
+        );
         // Shell tool turned off so codex falls onto MCP.
         assert!(rendered.contains("shell_tool = false"));
     }
