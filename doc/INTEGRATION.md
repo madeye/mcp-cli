@@ -139,8 +139,8 @@ Once mounted, the agent sees these MCP tools (full schemas in
 
 | tool | shape | notes |
 |---|---|---|
-| `fs_read` | `{path, offset?, length?}` → `{content, …}` | mmap-backed |
-| `fs_read_batch` | `{requests: [{path, offset?, length?}]}` → `{responses: [{path, result?, error?}]}` | per-item errors don't abort the batch |
+| `fs_read` | `{path, offset?, length?, strip_noise?}` → `{content, stripped_regions?, …}` | mmap-backed; `strip_noise: true` elides license / base64 / generated boilerplate when reading from byte 0 |
+| `fs_read_batch` | `{requests: [{path, offset?, length?, strip_noise?}]}` → `{responses: [{path, result?, error?}]}` | per-item errors don't abort the batch |
 | `fs_snapshot` / `fs_changes` | version cursor + coalesced events | for incremental sync clients |
 | `fs_scan` | optional subdir + max | gitignore-aware, `.git/` excluded |
 | `git_status` | `{repo?, compact?}` | libgit2; `compact: true` rolls up by status class + per-dir |

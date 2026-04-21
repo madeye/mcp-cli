@@ -60,6 +60,14 @@ pub struct FsReadParams {
     pub offset: u64,
     #[serde(default)]
     pub length: Option<u64>,
+    /// When true, the daemon replaces boilerplate regions in `content`
+    /// with single-line `[[mcp-cli: stripped …]]` markers. Currently
+    /// recognized: leading license-header comments, long base64 blobs,
+    /// and the body of files tagged `@generated` / `DO NOT EDIT`. See
+    /// `FsReadResult::stripped_regions` for per-region detail. Only
+    /// meaningful when reading from the start of the file.
+    #[serde(default)]
+    pub strip_noise: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +77,24 @@ pub struct FsReadResult {
     pub total_size: u64,
     pub content: String,
     pub truncated: bool,
+    /// Populated when `FsReadParams::strip_noise` is true and the
+    /// daemon elided boilerplate sections from `content`. Omitted
+    /// (empty) otherwise. Line numbers refer to the ORIGINAL file
+    /// content so callers can request them specifically if needed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stripped_regions: Vec<StrippedRegion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrippedRegion {
+    /// `"license"`, `"base64"`, or `"generated"`.
+    pub kind: String,
+    /// 1-based inclusive line range in the original file content.
+    pub start_line: u32,
+    pub end_line: u32,
+    /// `end_line - start_line + 1` — the number of lines collapsed
+    /// into a single marker.
+    pub lines: u32,
 }
 
 // ---- fs.read_batch ------------------------------------------------------

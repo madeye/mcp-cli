@@ -92,6 +92,7 @@ fn fs_read_inner(daemon: &Daemon, params: &FsReadParams) -> Result<FsReadResult,
             total_size: 0,
             content: String::new(),
             truncated: false,
+            stripped_regions: Vec::new(),
         });
     }
 
@@ -111,12 +112,26 @@ fn fs_read_inner(daemon: &Daemon, params: &FsReadParams) -> Result<FsReadResult,
 
     let content = String::from_utf8_lossy(slice).into_owned();
     let truncated = end < total_size;
+
+    // Detection uses cues from the head of the file (shebang, leading
+    // comments, `@generated` markers), so only run it on whole-file
+    // reads starting at byte 0 — an offset>0 slice is almost certainly
+    // a scroll-page, not a fresh view, and boilerplate won't be there
+    // anyway.
+    let (content, stripped_regions) = if params.strip_noise && params.offset == 0 {
+        let stripped = compact::strip_noise::strip_noise(&content);
+        (stripped.content, stripped.regions)
+    } else {
+        (content, Vec::new())
+    };
+
     Ok(FsReadResult {
         path: params.path.clone(),
         bytes_read: limit,
         total_size,
         content,
         truncated,
+        stripped_regions,
     })
 }
 

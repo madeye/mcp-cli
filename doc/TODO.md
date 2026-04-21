@@ -233,8 +233,19 @@ tool-output bytes 60–90 % so the agent burns less context per call.
       Bodiless declarations (constants, type aliases, unit structs)
       fall back to the first line. Bridge schemas + `doc/PROTOCOL.md`
       updated; unit tests cover rust/python/ts/go/c.
-- [ ] `fs.read` `?strip-noise` flag for license headers, long base64
-      blobs, generated-file markers.
+- [x] `fs.read` `strip_noise` flag. `FsReadParams` grows
+      `strip_noise: bool` (default `false`); when set and `offset == 0`,
+      the daemon runs three detectors over the content: (a) leading
+      license-header comments (Copyright / SPDX / etc., ≥ 3 lines),
+      (b) runs of ≥ 5 base64-ish lines (≥ 60 chars each, alnum
+      + `+/=-_`), and (c) bodies of files tagged `@generated` / `DO NOT
+      EDIT` in the first 10 lines and ≥ 50 lines long. Each stripped
+      region becomes a single `[[mcp-cli: stripped N-line <kind>]]`
+      marker; `FsReadResult::stripped_regions` reports the original
+      1-based line range so callers can request specific lines back.
+      Bridge schemas + `doc/PROTOCOL.md` + `doc/INTEGRATION.md`
+      updated; 13 unit tests cover license / base64 / generated /
+      shebang preservation / overlap resolution.
 - [ ] New `tool.run` family (one MCP method per wrapped tool, dispatched
       to a `ToolBackend` trait that mirrors `LanguageBackend`):
     - [ ] `tool.cargo_test`, `tool.cargo_clippy`, `tool.cargo_build`
