@@ -43,31 +43,28 @@ Goal: make `search.grep` and future semantic queries cheap on cold caches.
   by per-language tree-sitter queries (`languages.rs` / `outline.rs`).
   Supported: rust, python, c, cpp, typescript, tsx, go.
 
-## M3 - Language backends + drop-in install (in progress)
+## M3 - Language backends + drop-in install (done)
 
-Two independent tracks, both landing in M3. The language work makes the
+Two independent tracks, both landed in M3. The language work makes the
 daemon *smarter*; the install work makes it something a user can actually
-adopt in under 30 seconds. The install track has shipped; language
-backends remain.
+adopt in under 30 seconds.
 
 ### Language backends
 
-Plug-in shape: a backend is `trait LanguageBackend` with `outline`,
-`symbols` today and `definition`, `references`, `diagnostics` to come.
-The daemon owns a `BackendRegistry` and routes each request to the
-first registered backend that claims the file's language.
+Generalist scope: tree-sitter + text tools across many languages, with
+a pluggable `trait LanguageBackend` + `BackendRegistry` so a specialist
+(rust-analyzer, clangd, …) could be dropped in later if a use case
+justifies it — but none are planned today.
 
 * Trait + registry + tree-sitter backend: **landed**
   (`crates/daemon/src/backends/`). The handlers no longer touch the
-  `ParseCache` directly — they go through `Daemon::backends`.
-* Rust: shell out (once, long-lived) to `rust-analyzer` over its LSP, cache
-  responses keyed on `ChangeLog` version. (pending)
-* C++: same pattern with `clangd`, plus auto-discover `compile_commands.json`.
-  (pending)
-* Pure-text languages: tree-sitter only (already landed in M2).
-
-The cost of `rust-analyzer` startup is paid once per project, not once per
-agent turn — that is the whole point of the daemon.
+  `ParseCache` directly — they go through `Daemon::backends`. Tree-sitter
+  covers the `outline` / `symbols` surface we ship today; `definition`,
+  `references`, and `diagnostics` would live on the same trait if the
+  RPC surface ever grows into them.
+* Supported languages: rust, python, c, cpp, typescript, tsx, go.
+  Adding a language is a variant + grammar crate + query string in
+  `languages.rs` — no per-language backend plumbing required.
 
 ### Drop-in install + per-project auto-spawn (done)
 
@@ -286,13 +283,7 @@ the daemon is buying back.
   `LanguageBackend` plugs in deeper semantics; `Compact` plugs in
   tighter output. Both keep the RPC surface stable.
 
-## Integration strategies
-
-Three ways to wire this daemon into an agent, in increasing order of
-invasiveness and performance headroom. M0–M5 above assume the MCP path;
-the LSP and WASI paths are parallel tracks, not sequential milestones.
-
-### MCP plugin (current)
+## Integration strategy
 
 * **Plan.** Implement an MCP-compatible server; the agent (Claude Code,
   Codex, …) mounts it over stdio.
@@ -304,45 +295,19 @@ the LSP and WASI paths are parallel tracks, not sequential milestones.
   socket. Heavy state (mmap, libgit2, tree-sitter, change ring) stays
   resident across calls instead of being rebuilt per invocation.
 
-### LSP proxy
-
-* **Plan.** Expose the same capabilities behind a Language Server
-  interface, so the daemon attaches to the editor the way `rust-analyzer`
-  or `clangd` does.
-* **Integration.** Register as an LSP for the project's languages (or as a
-  generic text LSP). Reuse the editor's already-open persistent connection;
-  ride on top of `textDocument/didOpen` + `didChange` streams instead of
-  running our own `notify-rs` watcher for open buffers.
-* **Perf win.** Share the editor's parsed AST and open-buffer contents
-  instead of re-reading from disk and re-parsing — the editor has already
-  paid that cost. The watcher only has to cover *unopened* files, which
-  collapses duplicate work on the hot set of files the user is actively
-  editing.
-
-### WASI extension
-
-* **Plan.** Compile the daemon's tool surface (grep, scan, outline) to
-  WebAssembly and load it inside the agent runtime's WASI sandbox.
-* **Integration.** Ship a `.wasm` artifact the agent host instantiates in
-  process. Calls are intra-process function invocations against a sandboxed
-  module; no socket, no framing, no serde round-trip for large buffers.
-* **Perf win.** Eliminates the IPC hop entirely — even a UDS round-trip
-  costs a context switch per call, and WASM sandbox entry is cheaper than
-  that. Linear memory is bounded and predictable, so the host can cap
-  resource use without relying on OS-level limits.
-
-## Open questions
-
-* **Scope: specialist vs generalist.** Should the daemon be tuned for a
-  small set of languages where we can go deep (Rust, C++ via
-  rust-analyzer / clangd) and accept degraded behavior elsewhere, or stay
-  language-agnostic (tree-sitter + text tools only) and let language
-  backends be opt-in plugins? This decision shapes M3 and M5 priorities.
-
 ## Non-goals
 
-* Becoming a general LSP. We sit *next to* LSPs and reuse their state.
-* Network transport. UDS only; remote agents talk to a remote daemon, not
-  this one.
-* Sandboxing. The daemon trusts its caller; the agent's safety story is
-  handled by the host (Claude Code, Codex, etc.).
+* **Specialist language backends.** Scope is deliberately generalist
+  (tree-sitter + text tools across many languages). Deep per-language
+  features via `rust-analyzer` / `clangd` / similar would belong in the
+  editor's own LSP, not here; the `LanguageBackend` trait leaves the
+  door open without committing the project to the maintenance surface.
+* **LSP proxy.** We don't expose our RPCs over LSP — agents mount us
+  as an MCP plugin and editors already have their own LSPs.
+* **WASI extension.** No in-process `.wasm` build of the tool surface;
+  the UDS round-trip is cheap enough that the sandbox-entry win
+  doesn't pay for the build + distribution complexity.
+* **Network transport.** UDS only; remote agents talk to a remote daemon,
+  not this one.
+* **Sandboxing.** The daemon trusts its caller; the agent's safety story
+  is handled by the host (Claude Code, Codex, etc.).

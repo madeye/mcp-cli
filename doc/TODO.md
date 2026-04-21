@@ -32,19 +32,21 @@ Concrete, actionable items. Group headers track milestones in
       eviction from the watcher on change events.
 - [x] LRU for `search.grep` results keyed on `(pattern, glob, version)`.
 
-## Language backends (M3)
+## Language backends (M3) — done
+
+Scope settled as generalist (tree-sitter + text tools across many
+languages). Specialist backends (rust-analyzer, clangd) aren't on the
+roadmap; the `LanguageBackend` trait leaves the door open if a future
+use case ever justifies one.
 
 - [x] `LanguageBackend` trait + registry. `crates/daemon/src/backends/`
       defines the trait and `BackendRegistry`; the daemon registers a
       `TreeSitterBackend` (wrapping the existing `ParseCache` + outline
       queries) by default. `code.outline` / `code.symbols` handlers
-      dispatch through the registry — specialist backends can be
-      registered ahead of tree-sitter for languages they cover.
-- [ ] Rust backend: spawn `rust-analyzer` once, speak LSP, cache by
-      `ChangeLog` version.
-- [ ] C++ backend: spawn `clangd`, parse `compile_commands.json`.
-- [ ] Backend health: detect crashes, auto-respawn, surface errors as RPC
-      errors instead of dropping the connection.
+      dispatch through the registry.
+- [x] Languages: rust, python, c, cpp, typescript, tsx, go. Adding a
+      new one is a variant + grammar crate + query string in
+      `languages.rs` — no per-language backend plumbing required.
 
 ## Drop-in install + per-cwd auto-spawn (M3) — done
 
@@ -108,13 +110,17 @@ identified but not pursued in this iteration:
       `result` / `error`; per-request failures don't abort.
       Integration test exercises both real-source and missing-path
       paths through the bridge → daemon → tree-sitter loop.
-- [ ] Cross-session warm cache. Today every bench starts with a
-      cold daemon; a long-lived daemon (the `doc/services/`
-      always-on shape) would amortise `search_grep` LRU and
-      `parse_cache` across agent sessions. The cache code already
-      exists; what's missing is making the bench measure a
-      warm-vs-cold delta as well as the baseline-vs-mcp one.
-- [ ] Once both above land, re-bench and update the README headline.
+- [x] Cross-session warm cache measurement. Bench now runs a third
+      `mcp_warm` pass against the still-running daemon from the cold
+      pass (`--daemon-arg=--idle-timeout=30m` pinned into the
+      generated config); `compare.py` renders a 6-col table with a
+      `Δ vs cold` column. Claude-Code twin (`bench/claudecode-forkexec`)
+      built on the same shape. See PRs #27, #28, #33, #34.
+- [x] Re-bench and update the README headline. 2026-04-21 results
+      under `bench/codex-forkexec/results/2026-04-21-rust-v0.122.0-sandbox-ablation.md`
+      and `bench/claudecode-forkexec/results/2026-04-21-rust-v0.122.0.md`;
+      top-level `README.md` now lists both agents' cold mcp-cli wins
+      (Codex −44 %/−64 %, Claude −82 %/−5 %).
 - [x] Extend the buffer pool to response serialization. New
       `BufferPool::acquire_with_capacity(min)` method; `handle_conn`'s
       response-write path now goes through `write_response_pooled`
@@ -233,21 +239,6 @@ tool-output bytes 60–90 % so the agent burns less context per call.
 - [ ] Bridge tool definitions for the new MCP surface, plus
       `doc/INTEGRATION.md` snippets showing the agent which tool to
       prefer over raw `Bash(...)` for each common workflow.
-
-## Integration strategies (parallel tracks)
-
-Tracked separately from the MCP milestones — these are alternative
-mounting surfaces, not sequential work.
-
-- [ ] **LSP proxy prototype**: expose `outline`/`definition`/`search` over
-      LSP so the daemon can ride an editor's existing persistent
-      connection and reuse its open-buffer text / ASTs.
-- [ ] **WASI build target**: compile a subset of the tool surface (grep,
-      scan, outline) to `wasm32-wasi` so agent runtimes that support WASI
-      can load it in-process and skip the UDS hop.
-- [ ] Decide scope: specialist (Rust + C++ deep via LSP backends) vs
-      generalist (tree-sitter + text tools across many languages). Gates
-      priority of M3 backend work and the WASI module surface.
 
 ## Docs / polish
 
