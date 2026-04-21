@@ -192,12 +192,13 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "fs_scan",
-            "description": "Enumerate all tracked files in the project (gitignore-aware, .git excluded). Returns the version cursor captured at the start of the walk, so a follow-up fs_changes(since: version) closes any race with events that landed during the scan. Use when fs_changes returned `overflowed: true`.",
+            "description": "Enumerate all tracked files in the project (gitignore-aware, .git excluded). Returns the version cursor captured at the start of the walk, so a follow-up fs_changes(since: version) closes any race with events that landed during the scan. Use when fs_changes returned `overflowed: true`. Set `compact: true` for a directory roll-up (per-dir file counts) instead of the flat path list — usually 10-100× smaller for 'what's in this repo' exploration.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Optional subdirectory relative to project root."},
-                    "max_results": {"type": "integer", "minimum": 1, "description": "Cap on returned entries."}
+                    "max_results": {"type": "integer", "minimum": 1, "description": "Cap on returned entries."},
+                    "compact": {"type": "boolean", "default": false, "description": "Return a `{by_dir: [{dir, count}], total}` roll-up instead of `files`."}
                 }
             }
         },

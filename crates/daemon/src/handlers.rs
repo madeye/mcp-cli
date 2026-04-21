@@ -23,6 +23,10 @@ use crate::server::{resolve_within, Daemon};
 /// empirically — enough to spot patterns, few enough that a 5000-file
 /// dirty tree still serializes to a kilobyte or two.
 const GIT_STATUS_TOP_DIRS_PER_CLASS: usize = 16;
+/// Same cap for `fs.scan`'s flat per-directory roll-up. `fs.scan`
+/// typically sees 10-100× more entries than `git.status` (whole tree
+/// vs. dirty files), so the row budget is larger.
+const FS_SCAN_TOP_DIRS: usize = 32;
 
 const FS_READ_DEFAULT_LIMIT: u64 = 256 * 1024;
 const SEARCH_DEFAULT_LIMIT: usize = 200;
@@ -202,10 +206,18 @@ pub fn fs_scan(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json:
         files.push(rel.to_string_lossy().to_string());
     }
 
+    let (files, compact) = if params.compact {
+        let c = compact::fs_scan_compact(&files, FS_SCAN_TOP_DIRS);
+        (Vec::new(), Some(c))
+    } else {
+        (files, None)
+    };
+
     Ok(serde_json::to_value(FsScanResult {
         version,
         files,
         truncated,
+        compact,
     })
     .unwrap())
 }

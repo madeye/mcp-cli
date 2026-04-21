@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use protocol::{
-    GitStatusClassBucket, GitStatusCompact, GitStatusDirCount, GitStatusEntry, SearchFileBucket,
-    SearchGrepCompact, SearchHit,
+    FsScanCompact, FsScanDirBucket, GitStatusClassBucket, GitStatusCompact, GitStatusDirCount,
+    GitStatusEntry, SearchFileBucket, SearchGrepCompact, SearchHit,
 };
 
 pub mod strip_noise;
@@ -117,6 +117,39 @@ pub fn search_grep_compact(hits: &[SearchHit]) -> SearchGrepCompact {
     SearchGrepCompact {
         buckets,
         total_matches,
+    }
+}
+
+/// Bucket `fs.scan` paths by their immediate parent directory.
+/// Ordered by count descending (alphabetical tie-break). Top-level
+/// files bucket as `"."`. When the bucket count exceeds `top_dirs`,
+/// the tail is summed into a synthetic `(other)` row so `total`
+/// always reconciles.
+pub fn fs_scan_compact(files: &[String], top_dirs: usize) -> FsScanCompact {
+    let mut by_dir: BTreeMap<String, usize> = BTreeMap::new();
+    for f in files {
+        *by_dir.entry(parent_dir_str(f)).or_insert(0) += 1;
+    }
+    let total = files.len();
+
+    let mut rows: Vec<FsScanDirBucket> = by_dir
+        .into_iter()
+        .map(|(dir, count)| FsScanDirBucket { dir, count })
+        .collect();
+    rows.sort_by(|a, b| b.count.cmp(&a.count).then(a.dir.cmp(&b.dir)));
+
+    if rows.len() > top_dirs {
+        let overflow: usize = rows[top_dirs..].iter().map(|r| r.count).sum();
+        rows.truncate(top_dirs);
+        rows.push(FsScanDirBucket {
+            dir: "(other)".to_string(),
+            count: overflow,
+        });
+    }
+
+    FsScanCompact {
+        by_dir: rows,
+        total,
     }
 }
 
@@ -241,6 +274,47 @@ mod tests {
         let entries = vec![entry("README.md", "wt_modified")];
         let c = git_status_compact(&entries, 16);
         assert_eq!(c.by_class[0].by_dir[0].dir, ".");
+    }
+
+    #[test]
+    fn fs_scan_compact_groups_by_parent_dir() {
+        let files: Vec<String> = [
+            "src/a.rs",
+            "src/b.rs",
+            "src/c.rs",
+            "docs/x.md",
+            "docs/y.md",
+            "README.md",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let c = fs_scan_compact(&files, 16);
+        assert_eq!(c.total, 6);
+        // src/ (3) first, then docs/ (2), then . (1).
+        assert_eq!(c.by_dir[0].dir, "src");
+        assert_eq!(c.by_dir[0].count, 3);
+        assert_eq!(c.by_dir[1].dir, "docs");
+        assert_eq!(c.by_dir[1].count, 2);
+        let dot = c.by_dir.iter().find(|b| b.dir == ".").unwrap();
+        assert_eq!(dot.count, 1);
+    }
+
+    #[test]
+    fn fs_scan_compact_collapses_overflow_into_other() {
+        let files: Vec<String> = (0..5).map(|i| format!("dir{i}/file.rs")).collect();
+        let c = fs_scan_compact(&files, 2);
+        assert_eq!(c.total, 5);
+        assert_eq!(c.by_dir.len(), 3); // 2 named + (other)
+        let other = c.by_dir.iter().find(|b| b.dir == "(other)").unwrap();
+        assert_eq!(other.count, 3);
+    }
+
+    #[test]
+    fn fs_scan_compact_handles_empty_input() {
+        let c = fs_scan_compact(&[], 16);
+        assert!(c.by_dir.is_empty());
+        assert_eq!(c.total, 0);
     }
 
     #[test]

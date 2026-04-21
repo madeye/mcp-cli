@@ -270,10 +270,15 @@ tool-output bytes 60–90 % so the agent burns less context per call.
       because `gh` is one binary everywhere and the JSON shape is
       stable — the usual specialist-maintenance argument doesn't
       apply.
-- [ ] `fs.scan ?compact` — directory tree roll-up with per-directory
+- [x] `fs.scan ?compact` — directory tree roll-up with per-directory
       counts (`src/ (8 files)`) instead of the flat path list. Same
       compaction primitive shape as `git.status ?compact` and
-      `search.grep ?compact`.
+      `search.grep ?compact`. `FsScanParams` grows `compact: bool`
+      (default `false`); in compact mode the response carries a
+      `{by_dir: [{dir, count}], total}` roll-up keyed by immediate
+      parent directory, ordered by count descending, with the tail
+      collapsed into a synthetic `(other)` row beyond 32 rows.
+      Top-level files bucket as `"."`.
 - [ ] `git.log` RPC — one-line commits, optional `since` / `author`
       / `max_count`. Small handler; fills the gap agents currently
       patch with raw `Bash("git log …")`.
