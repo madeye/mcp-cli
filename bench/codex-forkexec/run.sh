@@ -192,16 +192,21 @@ run_codex() {
     local path_prefix=""
     [[ -n "$extra_path" ]] && path_prefix="$extra_path:"
 
-    # `--add-dir "$OUT_DIR"` whitelists the bench output directory in
-    # codex's sandbox, so the shim wrappers' counter writes (and our
-    # auto-spawned daemon's per-cwd socket / log) work even under
-    # macOS Seatbelt or Linux sandboxing. Without it the shim writes
-    # silently EPERM and per-binary counts come back as zero.
+    # `--sandbox danger-full-access` disables codex's Seatbelt /
+    # Landlock wrapper entirely. The bench previously used
+    # `--sandbox workspace-write` (plus `--add-dir "$OUT_DIR"` so the
+    # shim counter writes + daemon sockets / logs could get through);
+    # measurements showed a non-trivial slice of wall-clock sitting in
+    # the sandbox enter/exit syscalls rather than the agent's own
+    # work, which skewed the mcp-cli vs baseline comparison. Disabling
+    # sandbox isolates the agent+daemon cost from the sandbox cost.
+    # `--add-dir` becomes a no-op under danger-full-access but is kept
+    # in place so the var doesn't need a conditional.
     local codex_args=(
         exec
         --skip-git-repo-check
         --json
-        --sandbox workspace-write
+        --sandbox danger-full-access
         --add-dir "$OUT_DIR"
     )
 

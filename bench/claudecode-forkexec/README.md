@@ -4,12 +4,20 @@ Twin of [`bench/codex-forkexec`](../codex-forkexec/README.md) — same
 workload, same three-pass shape, same comparison table — driven by
 the `claude` CLI instead of `codex exec`.
 
-Running both benches on the same `TARGET_REF` lets you compare how
-much each agent wins from mcp-cli: Codex already showed a 79 %
-execve drop with a wall-clock regression (atomic MCP calls >
-bash-pipeline turns); Claude Code has a different tool palette
-(`Read`, `Grep`, `Glob`, `Bash`) and a different tool-use event
-stream, so its payoff curve won't be identical.
+> **Headline (first end-to-end run, 2026-04-21)** —
+> [results/2026-04-21-rust-v0.122.0.md](./results/2026-04-21-rust-v0.122.0.md):
+> cold mcp-cli cuts **fork/exec 82 %** (85 → 15), beats baseline
+> **wall-clock by 10 s** (208 s vs 219 s), and drops cold→warm
+> **cached input by 952 k tokens** despite the warm agent making
+> *more* calls (53 vs 29 mcp-cli calls). Claude shells out harder
+> than Codex by default so its proportional fork/exec win is
+> bigger (82 % vs 66 % on the same prompt); Claude also doesn't
+> regress wall-clock on the cold pass the way Codex does.
+>
+> Measured with `--mcp-config` + `--disallowed-tools` to force
+> routing; no pollution of `~/.claude.json`. Full caveats,
+> cross-agent comparison, and column-by-column analysis in the
+> result file.
 
 ## What it does
 

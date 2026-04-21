@@ -7,19 +7,26 @@ milestone (M3 backends, M4 I/O ceiling, M7 compaction) is a
 no-op if the agent never actually stops shelling out — so we
 measure that directly.
 
-> **Headline (after `--prefer-mcp` landed)** —
-> [results/2026-04-20-rust-v0.121.0-prefer-mcp.md](./results/2026-04-20-rust-v0.121.0-prefer-mcp.md):
-> **fork/exec drops 79 %** (103 → 22, every `rg` and `sed` gone),
-> **input tokens drop 19 %**, and codex actually called the daemon
-> 124 times (`fs_read` ×50, `search_grep` ×70, `fs_scan` ×4).
-> Wall-clock regressed 45 % because each MCP call is atomic — codex
-> needed ~2.7× more turns than the bash-pipeline baseline; closing
-> that needs compound / batch MCP tools, not a daemon perf fix.
+> **Headline (sandbox ablation, 2026-04-21)** —
+> [results/2026-04-21-rust-v0.122.0-sandbox-ablation.md](./results/2026-04-21-rust-v0.122.0-sandbox-ablation.md):
+> with `--sandbox danger-full-access`, **cold mcp-cli is 44 %
+> faster** than baseline (117 s vs 209 s), **cuts input tokens 64 %**
+> (694 k vs 1.93 M), and **fork/exec drops 66 %** (64 → 22). The
+> prior sandboxed run's wall-clock regression was Seatbelt
+> enter/exit cost on the baseline's shell commands, not daemon cost
+> — once that noise is gone the daemon's real effect becomes
+> legible. Warm cold→warm cached input drops another 649 k tokens
+> even as the agent makes more calls: `search_cache` + `parse_cache`
+> + prewarm amortising work as intended.
 >
-> v1 result (no `--prefer-mcp`,
+> Prior sandboxed result (`--sandbox workspace-write`,
+> [results/2026-04-20-rust-v0.121.0-prefer-mcp.md](./results/2026-04-20-rust-v0.121.0-prefer-mcp.md))
+> showed **fork/exec −79 %**, **input tokens −19 %**, 124 real daemon
+> calls — but wall-clock regressed 45 % (the Seatbelt artifact above).
+> The v1 run (no `--prefer-mcp`,
 > [results/2026-04-20-rust-v0.121.0.md](./results/2026-04-20-rust-v0.121.0.md))
-> is left in place as the negative control: codex ignored the
-> daemon entirely until the new install flag landed.
+> is left in place as the negative control: codex ignored the daemon
+> entirely until the `--prefer-mcp` install flag landed.
 
 ## What it does
 
