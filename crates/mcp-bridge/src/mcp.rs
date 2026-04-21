@@ -138,20 +138,21 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "fs_read",
-            "description": "Read a file from the project root via the daemon's mmap-backed VFS.",
+            "description": "Read a file from the project root via the daemon's mmap-backed VFS. Set `strip_noise: true` to collapse license headers, long base64 blobs, and `@generated` bodies into short `[[mcp-cli: stripped …]]` markers — original line ranges are reported in `stripped_regions` so callers can ask for specific lines back if needed.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Path relative to project root."},
                     "offset": {"type": "integer", "minimum": 0, "default": 0},
-                    "length": {"type": "integer", "minimum": 1, "description": "Bytes to read; default 256 KiB."}
+                    "length": {"type": "integer", "minimum": 1, "description": "Bytes to read; default 256 KiB."},
+                    "strip_noise": {"type": "boolean", "default": false, "description": "Elide license/base64/generated boilerplate from the returned content. Only applied when offset is 0."}
                 },
                 "required": ["path"]
             }
         },
         {
             "name": "fs_read_batch",
-            "description": "Read many files (or regions) in one MCP call. Response is a parallel list of {result?, error?}; per-request failures do not abort the batch.",
+            "description": "Read many files (or regions) in one MCP call. Response is a parallel list of {result?, error?}; per-request failures do not abort the batch. Each request may opt into `strip_noise` independently.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -162,7 +163,8 @@ fn tool_definitions() -> Value {
                             "properties": {
                                 "path": {"type": "string"},
                                 "offset": {"type": "integer", "minimum": 0, "default": 0},
-                                "length": {"type": "integer", "minimum": 1}
+                                "length": {"type": "integer", "minimum": 1},
+                                "strip_noise": {"type": "boolean", "default": false}
                             },
                             "required": ["path"]
                         },

@@ -12,6 +12,8 @@ use protocol::{
     SearchGrepCompact, SearchHit,
 };
 
+pub mod strip_noise;
+
 /// Bucket `git.status` entries by their primary status class and, within
 /// each class, by parent directory. The result is the rtk-style "60 files
 /// changed across these directories" view rather than the per-file dump.
