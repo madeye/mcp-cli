@@ -145,8 +145,8 @@ Once mounted, the agent sees these MCP tools (full schemas in
 | `fs_scan` | optional subdir + max | gitignore-aware, `.git/` excluded |
 | `git_status` | `{repo?, compact?}` | libgit2; `compact: true` rolls up by status class + per-dir |
 | `search_grep` | `{pattern, glob?, path?, context?, compact?, …}` | grep-searcher; `context: N` attaches surrounding lines |
-| `code_outline` | `{path}` → `{entries: [{kind, name, …}]}` | tree-sitter, supports rust/python/c/cpp/ts/tsx/go |
-| `code_outline_batch` / `code_symbols_batch` | `{requests: [{path}]}` → batched | per-item errors don't abort |
+| `code_outline` | `{path, signatures_only?}` → `{entries: [{kind, name, signature?, …}]}` | tree-sitter, supports rust/python/c/cpp/ts/tsx/go; `signatures_only: true` drops bodies |
+| `code_outline_batch` / `code_symbols_batch` | `{requests: [{path, signatures_only?}]}` → batched | per-item errors don't abort |
 | `code_symbols` | flat de-duplicated symbol list | cheaper than `code_outline` when only names matter |
 | `metrics_gain` | per-tool byte-savings counters | `(raw, compacted, calls)` |
 | `metrics_tool_latency` | per-tool wall-clock counters (μs) | calls / sum / mean / max |

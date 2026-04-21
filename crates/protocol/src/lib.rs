@@ -301,6 +301,15 @@ pub struct FsScanResult {
 pub struct CodeOutlineParams {
     /// Path relative to project root (or absolute inside root).
     pub path: String,
+    /// When true, each entry carries a `signature` field containing the
+    /// declaration header up to (but not including) the body — e.g.
+    /// `fn foo(x: u32) -> bool` instead of the full function. Entries
+    /// without a recognizable body (constants, type aliases, unit
+    /// structs) fall back to the first line of the declaration.
+    /// Cheaper than fetching the full file when the agent only needs
+    /// signatures.
+    #[serde(default)]
+    pub signatures_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -318,6 +327,11 @@ pub struct CodeOutlineEntry {
     pub start_line: u32,
     /// 1-based line of the end of the declaration (inclusive).
     pub end_line: u32,
+    /// Declaration header up to the body, with interior whitespace
+    /// collapsed to single spaces. Populated only when
+    /// `CodeOutlineParams::signatures_only` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
