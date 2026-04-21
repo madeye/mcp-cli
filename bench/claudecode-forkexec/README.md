@@ -55,12 +55,17 @@ without touching any on-disk config. That file path is also how we
 embed the `--daemon-arg=--idle-timeout=30m` override the warm pass
 relies on.
 
-`--bare` is the companion flag: it strips hooks, plugins, auto-memory
-reads, CLAUDE.md auto-discovery, and background keychain reads so the
-bench numbers don't drift based on whatever happens to be in the
-user's environment. `ANTHROPIC_API_KEY` must be set (or configured
-via `--settings`) — `--bare` will not read OAuth state from the
-keychain.
+We **intentionally do not pass `--bare`**. `--bare` would strip
+hooks, plugins, auto-memory, and CLAUDE.md auto-discovery — great
+for reproducibility in isolation — but it also blocks keychain
+reads, which breaks macOS OAuth. In environments without
+`ANTHROPIC_API_KEY` explicitly set, claude errors out with "Not
+logged in" under `--bare`. The trade we make instead: the user's
+hooks / plugins / CLAUDE.md load in every pass (baseline, cold,
+warm), so comparative deltas remain meaningful (same bias in every
+column) but absolute numbers reflect the user's environment. If
+you want the `--bare`-isolated numbers, set `ANTHROPIC_API_KEY`
+and add `--bare` back into `claude_args` in `run.sh`.
 
 ## Workload
 
