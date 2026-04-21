@@ -19,6 +19,8 @@ Concrete, actionable items. Group headers track milestones in
           escaping root, accepts absolute paths inside root.
     - [x] `framing`: max-frame, EOF mid-frame, oversize length.
 - [x] Bench: `cargo bench` comparing `fs.read` via daemon vs. `cat` fork.
+      `crates/daemon/benches/fs_read.rs` — macOS baseline: daemon ~67 µs vs
+      cat ~1.15 ms (~17× faster). Run with `cargo bench -p daemon --bench fs_read`.
 
 ## Indexing (M2)
 
@@ -168,9 +170,6 @@ is the current headline.
       Bench `run.sh` snapshots the counters into
       `mcp.metrics.tool_latency.json` after the with-mcp run and
       `compare.py` renders a per-tool latency table when present.
-- [ ] CI job (manual / weekly) that runs the benchmark on a
-      controlled runner with Codex pre-installed and posts the
-      comparison table as a PR comment.
 - [ ] macOS support beyond the Linux baseline: `dtruss` requires
       root, document the workflow and gate the script on
       `id -u == 0` for the trace step.

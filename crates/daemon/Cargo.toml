@@ -50,3 +50,8 @@ mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
 tempfile.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "fs_read"
+harness = false
