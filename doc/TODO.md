@@ -18,7 +18,7 @@ Concrete, actionable items. Group headers track milestones in
     - [x] `resolve_within`: rejects `..` traversal, rejects symlinks
           escaping root, accepts absolute paths inside root.
     - [x] `framing`: max-frame, EOF mid-frame, oversize length.
-- [ ] Bench: `cargo bench` comparing `fs.read` via daemon vs. `cat` fork.
+- [x] Bench: `cargo bench` comparing `fs.read` via daemon vs. `cat` fork.
 
 ## Indexing (M2)
 
