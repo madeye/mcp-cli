@@ -136,10 +136,14 @@ identified but not pursued in this iteration:
 ## Codex fork/exec reduction benchmark (M5)
 
 Reproducible measurement that the daemon actually erases per-call
-kernel overhead. Lives under `bench/codex-forkexec/`. Five result
-files now under `bench/codex-forkexec/results/`; the
+kernel overhead. The current headline run still lives under
+`bench/codex-forkexec/`; five result files now sit under
+`bench/codex-forkexec/results/`, and the
 [v5 run](../bench/codex-forkexec/results/2026-04-20-rust-v0.121.0-search-ctx.md)
-is the current headline.
+is the README headline today. There is now also a Claude Code twin
+under `bench/claudecode-forkexec/`: same target workload, but a
+three-pass `baseline` / `cold mcp-cli` / `warm mcp-cli` shape so the
+daemon's cache reuse shows up explicitly.
 
 - [x] `bench/codex-forkexec/run.sh` orchestrator: clone target at
       its latest release tag, run the analysis prompt twice
@@ -162,9 +166,15 @@ is the current headline.
       Bench `run.sh` snapshots the counters into
       `mcp.metrics.tool_latency.json` after the with-mcp run and
       `compare.py` renders a per-tool latency table when present.
+- [x] `bench/claudecode-forkexec/` twin bench: same workload as the
+      codex bench, but driven by `claude -p --output-format
+      stream-json` and expanded to three passes (`baseline`, `cold`,
+      `warm`) so cache reuse can be measured alongside fork/exec
+      reduction.
 - [ ] CI job (manual / weekly) that runs the benchmark on a
-      controlled runner with Codex pre-installed and posts the
-      comparison table as a PR comment.
+      controlled runner with the target agent pre-installed and posts
+      the comparison table as a PR comment. Codex is the first target;
+      Claude Code can follow once runner auth is nailed down.
 - [ ] macOS support beyond the Linux baseline: `dtruss` requires
       root, document the workflow and gate the script on
       `id -u == 0` for the trace step.
