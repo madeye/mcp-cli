@@ -199,12 +199,15 @@ log "wrote --mcp-config to $MCP_CONFIG_FILE"
 # says "read-only analysis" but belt-and-braces. TodoWrite / Task /
 # agent-internal orchestration tools stay enabled.
 #
-# Comma-separated, not space-separated — `--disallowed-tools` accepts
-# either per `--help`, but it's declared as variadic (`<tools...>`)
-# and when space-separated it consumes the following positional
-# (the prompt) as one of the tool names. Claude then errors with
-# "Input must be provided either through stdin or as a prompt
-# argument when using --print". Comma form dodges the variadic.
+# `--disallowed-tools` is declared variadic (`<tools...>`) in
+# commander.js, so *any* positional after it (even with comma-joined
+# values like "Bash,Read") gets consumed as another tool name —
+# including the prompt. Two fixes are required:
+#   1. Comma-joined values so the "list" collapses to one token.
+#   2. Pipe the prompt via stdin (omit the positional prompt arg)
+#      so there's nothing for the variadic to grab.
+# Without (2) claude errors with "Input must be provided either
+# through stdin or as a prompt argument when using --print".
 MCP_DISALLOWED_TOOLS="Bash,Read,Grep,Glob,Edit,Write,NotebookEdit"
 
 run_claude() {
@@ -266,23 +269,26 @@ run_claude() {
     local -a env_args=(env PATH="${path_prefix}$PATH")
     [[ -n "$zdotdir" ]] && env_args+=(ZDOTDIR="$zdotdir")
 
+    # Prompt via stdin, not positional. See the MCP_DISALLOWED_TOOLS
+    # comment above — the variadic `--disallowed-tools` would otherwise
+    # swallow the positional prompt.
     case "$TRACER" in
     strace)
         "${env_args[@]}" \
             strace -e trace=execve -f -qq -o "$trace" -- \
-            "$CLAUDE" "${claude_args[@]}" "$(cat "$PROMPT_FILE")" \
-            >"$stdout" 2>"$stderr" || true
+            "$CLAUDE" "${claude_args[@]}" \
+            <"$PROMPT_FILE" >"$stdout" 2>"$stderr" || true
         ;;
     dtruss)
         "${env_args[@]}" \
             dtruss -f -t execve \
-            "$CLAUDE" "${claude_args[@]}" "$(cat "$PROMPT_FILE")" \
-            >"$stdout" 2>"$trace" || true
+            "$CLAUDE" "${claude_args[@]}" \
+            <"$PROMPT_FILE" >"$stdout" 2>"$trace" || true
         ;;
     shim)
         "${env_args[@]}" \
-            "$CLAUDE" "${claude_args[@]}" "$(cat "$PROMPT_FILE")" \
-            >"$stdout" 2>"$stderr" || true
+            "$CLAUDE" "${claude_args[@]}" \
+            <"$PROMPT_FILE" >"$stdout" 2>"$stderr" || true
         ;;
     esac
 
