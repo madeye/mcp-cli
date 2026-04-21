@@ -243,28 +243,28 @@ First targets:
 ### New external-command wrappers
 
 The big rtk wins are on commands the daemon doesn't own today: test
-runners, linters, builders. M6 adds a `tool.run` family that shells
-out (once, not per-call) to the underlying tool, parses its
-structured output, and returns the compacted view:
+runners, linters, builders. We *don't* ship per-framework adapters
+— that's the same specialist slope the M3 pivot walked away from
+(each JSON schema is its own upstream to track: cargo ≠ pytest ≠
+jest ≠ ruff ≠ eslint ≠ golangci-lint, and each one drifts). Instead:
 
-* `tool.cargo_test`, `tool.cargo_clippy`, `tool.cargo_build` —
-  consume cargo's JSON output (`--message-format=json`), surface
-  failures + warnings only.
-* `tool.test_runner` — generic adapter for `pytest --json-report`,
-  `jest --json`, `go test -json`, `vitest --reporter=json`. Failures
-  + summary counts, never the passing-test noise.
-* `tool.lint` — `eslint --format json`, `tsc --pretty false`,
-  `ruff check --output-format=json`, `golangci-lint run --out-format json`.
-  Group by file → rule → line so the agent gets a histogram, not a
-  log dump.
-* `tool.gh` — bridge GitHub CLI for `pr list`, `pr view`, `issue list`,
-  `run list`. Parses the JSON, drops avatar URLs / timestamps the
-  agent doesn't need.
+* **`tool.run`** — generic shell-out with three tool-agnostic
+  primitives: (1) **tee-on-failure** writes raw stdout/stderr to
+  `${XDG_CACHE}/mcp-cli/tee/<hash>.log` on non-zero exit and returns
+  the path, so the agent reads the full output only when the summary
+  isn't enough (rtk's failure-recovery pattern); (2) **byte-cap
+  truncation** — head + tail with a `(X lines elided)` marker on
+  zero-exit runs, so passing-test noise never floods context; (3) a
+  **`(command, cwd, file-mtime-fingerprint)` LRU cache** — re-runs
+  with no source changes return the cached result without
+  re-executing, same shape as `search.grep`'s ChangeLog-versioned
+  cache. Callers who want a specialist formatter can wrap the
+  command themselves before calling `tool.run`.
 
-External commands stream into the daemon, so the bridge sees the
-compacted form only — and the daemon can cache the parsed form keyed
-on `(command, cwd, file-mtime-fingerprint)` the same way `search.grep`
-caches by ChangeLog version.
+* **`tool.gh`** — one named exception. `gh` is one binary everywhere
+  and its `--json` shape is stable, so the usual specialist-
+  maintenance argument doesn't apply. `pr list`, `pr view`,
+  `issue list`, `run list` drop avatar URLs / noisy timestamps.
 
 ### Token-savings telemetry
 
@@ -279,9 +279,10 @@ the daemon is buying back.
 * We already own the structured form for the highest-frequency tools
   (`fs.read`, `search.grep`, `git.status`, `code.outline`). Compacting
   in-process is cheaper and more correct than re-parsing formatted text.
-* `tool.run` shares the daemon's parse / file-watch / cache layers,
-  so a `cargo test` whose dependency graph hasn't changed can return
-  the cached structured failure list without re-running.
+* `tool.run` shares the daemon's file-watch / cache layers, so a
+  `cargo test` whose dependency graph hasn't changed short-circuits
+  to the cached result without re-running — same mechanism that keeps
+  `search.grep` cheap across repeated agent calls.
 * The compaction layer is symmetric with the M3 backend layer:
   `LanguageBackend` plugs in deeper semantics; `Compact` plugs in
   tighter output. Both keep the RPC surface stable.
