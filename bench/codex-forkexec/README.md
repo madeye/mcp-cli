@@ -45,13 +45,14 @@ measure that directly.
      `search_cache` + `parse_cache` (and fully-finished prewarm).
 3. Wraps each run with an `execve` tracer (auto-picked):
    * Linux: `strace -e trace=execve -f -o trace.log codex exec ...`
-   * macOS root: `dtruss -f -t execve codex exec ...`
-   * Otherwise: **shim mode** — PATH-shadow wrappers that bump a
-     per-binary counter file before delegating to the real binary.
-     Works without root by setting `$ZDOTDIR` so codex's `zsh -lc`
-     re-prepends the shim dir after the user's profile, and by
-     passing `--add-dir "$OUT_DIR"` so codex's sandbox lets the
-     counter writes through.
+   * Otherwise (macOS, or Linux without `strace`): **shim mode** —
+     PATH-shadow wrappers that bump a per-binary counter file
+     before delegating to the real binary. Works without root by
+     setting `$ZDOTDIR` so codex's `zsh -lc` re-prepends the shim
+     dir after the user's profile, and by passing `--add-dir
+     "$OUT_DIR"` so codex's sandbox lets the counter writes
+     through. (An earlier `dtruss` backend was dropped because it
+     needed root on macOS, which is out of scope.)
 4. Parses each trace (or counter dir), tabulates per-binary
    `execve` count, wall-clock, codex token usage, and the codex
    `mcp_tool_call` events grouped by `server/tool` so you can see
@@ -73,8 +74,10 @@ Prereqs:
 * `mcp-cli`, `mcp-cli-bridge`, and `mcp-cli-daemon` on `PATH` —
   `cargo install --path crates/mcp-cli` from the repo root, plus
   symlinks for the bridge and daemon binaries from `target/release/`.
-* Linux: `strace` installed, no extra privileges needed.
-* macOS: must run as root for `dtruss` to attach.
+* Linux: `strace` installed (optional; shim mode is used when
+  `strace` isn't available).
+* macOS: no extra tooling — shim mode is always used; there's no
+  root-gated tracer in scope for this bench.
 * `git`, `python3`, `jq`.
 
 ```sh
@@ -100,7 +103,7 @@ If you have an existing trace pair you just want re-tabulated, call
 ```sh
 python3 bench/codex-forkexec/compare.py \
     --out-dir /path/to/run-artifacts \
-    --tracer strace      # or dtruss; auto-detects from `uname -s`
+    --tracer strace      # or shim; auto-detects from `uname -s`
 ```
 
 ## Output
@@ -141,8 +144,12 @@ pass, `compare.py` falls back to the original four-column layout.
   prompt, but the agent's tool choices still vary slightly between
   runs. Treat single-run numbers as indicative; trust the trend
   across N≥3 runs.
-* **macOS root requirement**: `dtruss` needs root. The script
-  refuses to start the trace step on macOS unless `id -u == 0`.
+* **macOS uses shim mode only**: there's no `strace` on macOS, and
+  the only system-wide `execve` tracer (`dtruss`) needs root, which
+  we deliberately don't support here. macOS runs get counts for
+  binaries in the shim allowlist (`cat head tail grep rg ripgrep
+  find ls git jq sed awk wc`) but won't catch an `execve` of a
+  binary outside that list.
 * **Codex-version-locked**: the parsing of Codex's stdout for token
   counts is fragile against Codex CLI updates. Re-check `compare.py`
   if the headline numbers look off after a Codex bump.

@@ -13,7 +13,6 @@ a '?' cell in the output rather than aborting the run.
 from __future__ import annotations
 
 import argparse
-import os
 import platform
 import re
 import sys
@@ -134,8 +133,6 @@ def select_tracer() -> str:
     system = platform.system()
     if system == "Linux":
         return "strace"
-    if system == "Darwin":
-        return "dtruss" if os.geteuid() == 0 else "shim"
     return "shim"
 
 
@@ -162,7 +159,7 @@ def main() -> int:
     ap.add_argument("--target-ref", default="?")
     ap.add_argument(
         "--tracer",
-        choices=("strace", "dtruss", "shim"),
+        choices=("strace", "shim"),
         default=None,
         help="Override the auto-detected tracer.",
     )

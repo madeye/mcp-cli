@@ -13,7 +13,6 @@ is more useful with partial data than with no data.
 from __future__ import annotations
 
 import argparse
-import os
 import platform
 import re
 import sys
@@ -128,10 +127,6 @@ def select_tracer() -> str:
     system = platform.system()
     if system == "Linux":
         return "strace"
-    if system == "Darwin":
-        # dtruss only works as root; assume the common case (no root)
-        # and pick the shim format.
-        return "dtruss" if os.geteuid() == 0 else "shim"
     return "shim"
 
 
@@ -164,10 +159,10 @@ def main() -> int:
     ap.add_argument("--target-ref", default="?")
     ap.add_argument(
         "--tracer",
-        choices=("strace", "dtruss", "shim"),
+        choices=("strace", "shim"),
         default=None,
-        help="Override the auto-detected tracer (defaults to strace on "
-        "Linux, dtruss on macOS root, shim otherwise).",
+        help="Override the auto-detected tracer (defaults to strace "
+        "on Linux, shim otherwise).",
     )
     args = ap.parse_args()
 

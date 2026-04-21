@@ -152,9 +152,11 @@ is the current headline.
 - [x] `bench/codex-forkexec/run.sh` orchestrator: clone target at
       its latest release tag, run the analysis prompt twice
       (baseline + mcp-cli-plugin), capture per-run trace +
-      stdout. Three tracer backends (strace / dtruss / shim);
-      shim is the macOS-no-root path (PATH-shadow shim wrappers
-      + ZDOTDIR override + sandbox `--add-dir` whitelist).
+      stdout. Two tracer backends (strace / shim); shim is the
+      macOS path (PATH-shadow shim wrappers + ZDOTDIR override +
+      sandbox `--add-dir` whitelist) and the Linux fallback when
+      `strace` isn't installed. An earlier `dtruss` backend was
+      dropped because it required root on macOS.
 - [x] `bench/codex-forkexec/prompt.md`: the analysis task.
 - [x] `bench/codex-forkexec/parse_trace.py`: count `execve`
       events per binary from each tracer's output.
@@ -170,9 +172,18 @@ is the current headline.
       Bench `run.sh` snapshots the counters into
       `mcp.metrics.tool_latency.json` after the with-mcp run and
       `compare.py` renders a per-tool latency table when present.
-- [ ] macOS support beyond the Linux baseline: `dtruss` requires
-      root, document the workflow and gate the script on
-      `id -u == 0` for the trace step.
+- [x] macOS support beyond the Linux baseline (dropped).
+      The original plan was to gate a `dtruss` trace step on
+      `id -u == 0` and document the sudo workflow. Decision:
+      `dtruss` requires root, which is out of scope for this
+      bench — we don't want users running an agent benchmark
+      under sudo, and the shim backend already covers the
+      headline binaries without root. `dtruss` was removed from
+      `run.sh`, `compare.py`, and `parse_trace.py` across both
+      `bench/codex-forkexec/` and `bench/claudecode-forkexec/`;
+      macOS now always uses shim mode. Limitation noted in both
+      READMEs under "Caveats": shim mode only counts the binaries
+      in its allowlist.
 
 ## Lifecycle (M6)
 

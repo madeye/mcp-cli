@@ -138,8 +138,10 @@ files as the agent walks the repo.
 
 ### What the benchmark measures
 
-* **`execve` count** — tracer-counted (`strace -e trace=execve -f`
-  on Linux, `dtruss -f -t execve` on macOS). The per-tool breakdown
+* **`execve` count** — tracer-counted. Linux uses
+  `strace -e trace=execve -f`; macOS uses the PATH-shadow shim
+  mode, since the system-wide tracer (`dtruss`) requires root and
+  that's deliberately out of scope. The per-tool breakdown
   separates the binaries the daemon obviates (`cat`, `grep`, `rg`,
   `git`, `find`, `ls`, `head`, `tail`) from the rest, so a regression
   in mcp-cli coverage shows up as a binary that crept back into the
@@ -157,7 +159,8 @@ files as the agent walks the repo.
 
 `bench/codex-forkexec/` outside the cargo workspace. Driver is bash
 + python (no need to drag in a benchmarking crate); requires Codex
-on `PATH` and either `strace` (Linux) or root + `dtruss` (macOS).
+on `PATH` and optionally `strace` on Linux (macOS always uses the
+no-root shim backend).
 
 ### Why this is a milestone, not just a script
 
