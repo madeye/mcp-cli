@@ -44,7 +44,12 @@ impl LanguageBackend for TreeSitterBackend {
         true
     }
 
-    fn outline(&self, path: &Path, language: Language) -> Result<OutlineResult, RpcError> {
+    fn outline(
+        &self,
+        path: &Path,
+        language: Language,
+        signatures: bool,
+    ) -> Result<OutlineResult, RpcError> {
         let parsed = match self.parse(path)? {
             Some(p) => p,
             None => {
@@ -54,7 +59,7 @@ impl LanguageBackend for TreeSitterBackend {
                 });
             }
         };
-        let entries = ts_outline::outline(&parsed)?;
+        let entries = ts_outline::outline(&parsed, signatures)?;
         Ok(OutlineResult {
             language: parsed.language,
             entries,
@@ -98,11 +103,26 @@ mod tests {
         let cache = Arc::new(ParseCache::new(4));
         let backend = TreeSitterBackend::new(cache);
 
-        let result = backend.outline(&path, Language::Rust).unwrap();
+        let result = backend.outline(&path, Language::Rust, false).unwrap();
         assert_eq!(result.language, Language::Rust);
         let names: Vec<_> = result.entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"alpha"));
         assert!(names.contains(&"Beta"));
+        // Signatures are opt-in.
+        assert!(result.entries.iter().all(|e| e.signature.is_none()));
+    }
+
+    #[test]
+    fn outline_via_backend_populates_signatures_when_requested() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("a.rs");
+        write(&path, "fn alpha(x: u32) -> u32 { x + 1 }\n");
+        let cache = Arc::new(ParseCache::new(4));
+        let backend = TreeSitterBackend::new(cache);
+
+        let result = backend.outline(&path, Language::Rust, true).unwrap();
+        let alpha = result.entries.iter().find(|e| e.name == "alpha").unwrap();
+        assert_eq!(alpha.signature.as_deref(), Some("fn alpha(x: u32) -> u32"));
     }
 
     #[test]

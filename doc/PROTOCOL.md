@@ -183,7 +183,7 @@ each other.
 
 ```jsonc
 // params
-{"path": "crates/daemon/src/handlers.rs"}
+{"path": "crates/daemon/src/handlers.rs", "signatures_only": false}
 
 // result
 {"path": "crates/daemon/src/handlers.rs", "language": "rust",
@@ -200,8 +200,18 @@ languages today: rust, python, c, cpp, typescript, tsx, go.
 Unsupported extensions return `language: null` and an empty
 `entries` list (not an error).
 
-`code.outline_batch` takes `{requests: [{path}, …]}` and returns
-`{responses: [{path, result?, error?}, …]}`. Per-request
+`signatures_only: true` attaches a compact `signature` field to
+each entry — the declaration header up to (but not including)
+the body, with interior whitespace collapsed to single spaces
+(e.g. `fn fs_read(daemon: &Daemon, params: serde_json::Value) -> Result<Value, RpcError>`).
+Entries without a recognizable body (constants, type aliases,
+unit structs) fall back to the first line of the declaration.
+Cheaper than a follow-up `fs.read` when the agent only needs
+signatures.
+
+`code.outline_batch` takes `{requests: [{path, signatures_only?}, …]}`
+and returns `{responses: [{path, result?, error?}, …]}`. Each
+request may opt into `signatures_only` independently. Per-request
 failures don't abort the batch.
 
 ### `code.symbols` / `code.symbols_batch`

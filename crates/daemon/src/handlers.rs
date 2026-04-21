@@ -479,7 +479,7 @@ fn code_outline_inner(
     params: &CodeOutlineParams,
 ) -> Result<CodeOutlineResult, RpcError> {
     let path = resolve_within(&daemon.root, &params.path)?;
-    let (language, entries) = match daemon.backends.outline(&path)? {
+    let (language, entries) = match daemon.backends.outline(&path, params.signatures_only)? {
         Some(r) => (Some(r.language.name().to_string()), r.entries),
         None => (None, Vec::new()),
     };

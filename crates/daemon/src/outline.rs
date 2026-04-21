@@ -5,14 +5,16 @@
 
 use protocol::{CodeOutlineEntry, RpcError};
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Query, QueryCursor};
+use tree_sitter::{Node, Query, QueryCursor};
 
 use crate::languages::Language;
 use crate::parse_cache::ParsedFile;
 
 /// Extract outline entries from a parsed file. Walks the language's
 /// compiled outline query and emits one entry per `@def.<kind>` capture.
-pub fn outline(parsed: &ParsedFile) -> Result<Vec<CodeOutlineEntry>, RpcError> {
+/// When `signatures` is true, each entry's `signature` field is populated
+/// with the declaration header (see `extract_signature`).
+pub fn outline(parsed: &ParsedFile, signatures: bool) -> Result<Vec<CodeOutlineEntry>, RpcError> {
     let query = Query::new(
         &parsed.language.ts_language(),
         parsed.language.outline_query(),
@@ -56,6 +58,11 @@ pub fn outline(parsed: &ParsedFile) -> Result<Vec<CodeOutlineEntry>, RpcError> {
         if let (Some(node), Some(kind), Some(name)) = (def_node, def_kind, name_text) {
             let start = node.start_position();
             let end = node.end_position();
+            let signature = if signatures {
+                Some(extract_signature(node, source))
+            } else {
+                None
+            };
             out.push(CodeOutlineEntry {
                 kind: kind.to_string(),
                 name,
@@ -63,6 +70,7 @@ pub fn outline(parsed: &ParsedFile) -> Result<Vec<CodeOutlineEntry>, RpcError> {
                 end_byte: node.end_byte() as u32,
                 start_line: (start.row as u32) + 1,
                 end_line: (end.row as u32) + 1,
+                signature,
             });
         }
     }
@@ -78,7 +86,7 @@ pub fn outline(parsed: &ParsedFile) -> Result<Vec<CodeOutlineEntry>, RpcError> {
 /// Flat symbol names: the `name` field of every outline entry, stably
 /// de-duplicated in first-seen order.
 pub fn symbols(parsed: &ParsedFile) -> Result<Vec<String>, RpcError> {
-    let entries = outline(parsed)?;
+    let entries = outline(parsed, false)?;
     let mut names: Vec<String> = Vec::with_capacity(entries.len());
     for e in entries {
         if !names.iter().any(|n| n == &e.name) {
@@ -86,6 +94,89 @@ pub fn symbols(parsed: &ParsedFile) -> Result<Vec<String>, RpcError> {
         }
     }
     Ok(names)
+}
+
+/// Node kinds that mark where a declaration's body starts. Covers all
+/// seven grammars currently wired in `languages.rs`. If the outline
+/// query ever captures a node whose body uses a kind not listed here,
+/// the signature falls back to the first line — still useful, just less
+/// precise.
+const BODY_KINDS: &[&str] = &[
+    "block",
+    "statement_block",
+    "compound_statement",
+    "field_declaration_list",
+    "ordered_field_declaration_list",
+    "enum_variant_list",
+    "enumerator_list",
+    "declaration_list",
+    "class_body",
+    "interface_body",
+    "object_type",
+    "enum_body",
+    "macro_rule",
+];
+
+/// The byte-offset of the "body" of a declaration, if it has one.
+/// Tries the `body` field first (grammar-agnostic path), then walks
+/// named descendants up to `DFS_DEPTH` levels looking for one of
+/// `BODY_KINDS`. Handles the Go `type_declaration -> type_spec ->
+/// struct_type -> field_declaration_list` shape without hard-coding
+/// Go specifics.
+fn find_body_start(node: Node<'_>) -> Option<usize> {
+    const DFS_DEPTH: usize = 4;
+    if let Some(body) = node.child_by_field_name("body") {
+        return Some(body.start_byte());
+    }
+    fn dfs(n: Node<'_>, depth: usize) -> Option<usize> {
+        if depth == 0 {
+            return None;
+        }
+        let mut cursor = n.walk();
+        for child in n.named_children(&mut cursor) {
+            if BODY_KINDS.contains(&child.kind()) {
+                return Some(child.start_byte());
+            }
+            if let Some(b) = dfs(child, depth - 1) {
+                return Some(b);
+            }
+        }
+        None
+    }
+    dfs(node, DFS_DEPTH)
+}
+
+/// Build a compact signature string for a declaration node. Takes the
+/// source bytes from the node's start up to its body (or, for bodiless
+/// declarations, the first line), then collapses all runs of
+/// whitespace to a single space and trims. Invalid UTF-8 degrades to
+/// an empty string rather than failing — outline entries are best-effort.
+fn extract_signature(node: Node<'_>, source: &[u8]) -> String {
+    let start = node.start_byte();
+    let body = find_body_start(node);
+    let end = match body {
+        Some(b) if b > start => b,
+        _ => node.end_byte(),
+    };
+    let slice = source.get(start..end).unwrap_or(&[]);
+    let text = std::str::from_utf8(slice).unwrap_or("");
+    // First line when no body was found — keeps multi-line constants
+    // and Go struct aliases from dumping the entire body.
+    let candidate = if body.is_none() {
+        text.split('\n').next().unwrap_or("")
+    } else {
+        text
+    };
+    let mut out = candidate.split_whitespace().collect::<Vec<_>>().join(" ");
+    // `macro_rule` / `field_declaration_list` starts one byte after the
+    // opening `{`, so the signature carries a trailing `{` we don't
+    // want. Drop trailing open delimiters — they're leftover body
+    // markers, never meaningful closers.
+    while out.ends_with('{') || out.ends_with('(') || out.ends_with('[') {
+        out.pop();
+        out.truncate(out.trim_end().len());
+    }
+    out
 }
 
 #[allow(dead_code)]
@@ -172,7 +263,7 @@ macro_rules! theta { () => {} }
 impl Beta {}
 "#;
         let parsed = parse("rs", src);
-        let entries = outline(&parsed).unwrap();
+        let entries = outline(&parsed, false).unwrap();
         let got = kinds_and_names(&entries);
         let want = [
             ("function", "alpha"),
@@ -209,7 +300,7 @@ class Decorated:
     pass
 "#;
         let parsed = parse("py", src);
-        let got = kinds_and_names(&outline(&parsed).unwrap());
+        let got = kinds_and_names(&outline(&parsed, false).unwrap());
         for want in [
             ("function", "plain"),
             ("class", "Holder"),
@@ -233,7 +324,7 @@ typedef int MyInt;
 #define MAX 10
 "#;
         let parsed = parse("c", src);
-        let got = kinds_and_names(&outline(&parsed).unwrap());
+        let got = kinds_and_names(&outline(&parsed, false).unwrap());
         for want in [
             ("function", "func"),
             ("struct", "Point"),
@@ -262,7 +353,7 @@ enum class Color { Red };
 int free_fn() { return 0; }
 "#;
         let parsed = parse("cpp", src);
-        let got = kinds_and_names(&outline(&parsed).unwrap());
+        let got = kinds_and_names(&outline(&parsed, false).unwrap());
         for want in [
             ("namespace", "ns"),
             ("class", "Widget"),
@@ -288,7 +379,7 @@ type Alias = number;
 enum Color { Red, Green }
 "#;
         let parsed = parse("ts", src);
-        let got = kinds_and_names(&outline(&parsed).unwrap());
+        let got = kinds_and_names(&outline(&parsed, false).unwrap());
         for want in [
             ("function", "plain"),
             ("class", "Holder"),
@@ -319,7 +410,7 @@ const Pi = 3.14
 var Name = "go"
 "#;
         let parsed = parse("go", src);
-        let got = kinds_and_names(&outline(&parsed).unwrap());
+        let got = kinds_and_names(&outline(&parsed, false).unwrap());
         for want in [
             ("function", "plain"),
             ("type", "Point"),
@@ -346,11 +437,158 @@ var Name = "go"
     fn byte_ranges_cover_declaration() {
         let src = "fn alpha() {}\n";
         let parsed = parse("rs", src);
-        let entries = outline(&parsed).unwrap();
+        let entries = outline(&parsed, false).unwrap();
         let alpha = entries.iter().find(|e| e.name == "alpha").unwrap();
         assert_eq!(alpha.start_byte, 0);
         // Ends at the closing brace.
         assert_eq!(alpha.end_byte as usize, src.trim_end().len());
         assert_eq!(alpha.start_line, 1);
+    }
+
+    #[test]
+    fn signatures_absent_by_default() {
+        let parsed = parse("rs", "fn alpha() {}\n");
+        let entries = outline(&parsed, false).unwrap();
+        assert!(entries.iter().all(|e| e.signature.is_none()));
+    }
+
+    fn sig_by_name<'a>(entries: &'a [CodeOutlineEntry], name: &str) -> &'a str {
+        entries
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap_or_else(|| panic!("no entry named {name} in {entries:?}"))
+            .signature
+            .as_deref()
+            .unwrap_or_else(|| panic!("entry {name} has no signature"))
+    }
+
+    #[test]
+    fn rust_signatures_strip_bodies_and_normalize() {
+        let src = r#"
+fn alpha(x: u32,
+         y: u32) -> u32 { x + y }
+struct Beta { x: u32, y: u32 }
+struct Unit;
+enum Gamma { A, B }
+trait Delta { fn m(); }
+mod epsilon { fn inner() {} }
+const ZETA: u32 = 1;
+type Eta = u32;
+macro_rules! theta { () => {} }
+impl<T> Beta where T: Clone {}
+"#;
+        let parsed = parse("rs", src);
+        let entries = outline(&parsed, true).unwrap();
+        assert_eq!(
+            sig_by_name(&entries, "alpha"),
+            "fn alpha(x: u32, y: u32) -> u32"
+        );
+        assert_eq!(sig_by_name(&entries, "Beta"), "struct Beta");
+        assert_eq!(sig_by_name(&entries, "Unit"), "struct Unit;");
+        assert_eq!(sig_by_name(&entries, "Gamma"), "enum Gamma");
+        assert_eq!(sig_by_name(&entries, "Delta"), "trait Delta");
+        assert_eq!(sig_by_name(&entries, "epsilon"), "mod epsilon");
+        assert_eq!(sig_by_name(&entries, "ZETA"), "const ZETA: u32 = 1;");
+        assert_eq!(sig_by_name(&entries, "Eta"), "type Eta = u32;");
+        assert_eq!(sig_by_name(&entries, "theta"), "macro_rules! theta");
+        assert_eq!(sig_by_name(&entries, "Beta"), "struct Beta");
+        // `impl` captured by name `Beta` (the target type).
+        let impl_sig = entries
+            .iter()
+            .find(|e| e.kind == "impl")
+            .unwrap()
+            .signature
+            .as_deref()
+            .unwrap();
+        assert_eq!(impl_sig, "impl<T> Beta where T: Clone");
+    }
+
+    #[test]
+    fn python_signatures_drop_bodies() {
+        let src = r#"
+def plain(x,
+          y):
+    return x + y
+
+class Holder:
+    def method(self): pass
+"#;
+        let parsed = parse("py", src);
+        let entries = outline(&parsed, true).unwrap();
+        assert_eq!(sig_by_name(&entries, "plain"), "def plain(x, y):");
+        assert_eq!(sig_by_name(&entries, "Holder"), "class Holder:");
+        assert_eq!(sig_by_name(&entries, "method"), "def method(self):");
+    }
+
+    #[test]
+    fn typescript_signatures_drop_bodies() {
+        let src = r#"
+function plain(x: number, y: number): number { return x + y }
+class Holder {
+  method(a: string): void {}
+}
+interface Shape { x: number }
+type Alias = number;
+enum Color { Red, Green }
+"#;
+        let parsed = parse("ts", src);
+        let entries = outline(&parsed, true).unwrap();
+        assert_eq!(
+            sig_by_name(&entries, "plain"),
+            "function plain(x: number, y: number): number"
+        );
+        assert_eq!(sig_by_name(&entries, "Holder"), "class Holder");
+        assert_eq!(sig_by_name(&entries, "method"), "method(a: string): void");
+        assert_eq!(sig_by_name(&entries, "Shape"), "interface Shape");
+        assert_eq!(sig_by_name(&entries, "Alias"), "type Alias = number;");
+        assert_eq!(sig_by_name(&entries, "Color"), "enum Color");
+    }
+
+    #[test]
+    fn go_signatures_drop_bodies() {
+        let src = r#"
+package main
+
+func plain(x int, y int) int { return x + y }
+
+type Point struct { X, Y int }
+
+func (p Point) method() int { return 0 }
+
+const Pi = 3.14
+
+var Name = "go"
+"#;
+        let parsed = parse("go", src);
+        let entries = outline(&parsed, true).unwrap();
+        assert_eq!(
+            sig_by_name(&entries, "plain"),
+            "func plain(x int, y int) int"
+        );
+        assert_eq!(sig_by_name(&entries, "Point"), "type Point struct");
+        assert_eq!(
+            sig_by_name(&entries, "method"),
+            "func (p Point) method() int"
+        );
+        assert_eq!(sig_by_name(&entries, "Pi"), "const Pi = 3.14");
+        assert_eq!(sig_by_name(&entries, "Name"), "var Name = \"go\"");
+    }
+
+    #[test]
+    fn c_signatures_drop_bodies() {
+        let src = r#"
+int func(int x,
+         int y) { return x + y; }
+struct Point { int x; int y; };
+enum Color { Red, Green };
+typedef int MyInt;
+#define MAX 10
+"#;
+        let parsed = parse("c", src);
+        let entries = outline(&parsed, true).unwrap();
+        assert_eq!(sig_by_name(&entries, "func"), "int func(int x, int y)");
+        assert_eq!(sig_by_name(&entries, "Point"), "struct Point");
+        assert_eq!(sig_by_name(&entries, "Color"), "enum Color");
+        assert_eq!(sig_by_name(&entries, "MyInt"), "typedef int MyInt;");
     }
 }

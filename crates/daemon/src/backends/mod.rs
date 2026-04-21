@@ -48,7 +48,16 @@ pub trait LanguageBackend: Send + Sync {
     /// generalist ones (tree-sitter).
     fn supports(&self, language: Language) -> bool;
 
-    fn outline(&self, path: &Path, language: Language) -> Result<OutlineResult, RpcError>;
+    /// `signatures` asks the backend to populate
+    /// `CodeOutlineEntry::signature` with the declaration header (body
+    /// stripped, whitespace collapsed). Backends that don't support it
+    /// may leave the field `None`.
+    fn outline(
+        &self,
+        path: &Path,
+        language: Language,
+        signatures: bool,
+    ) -> Result<OutlineResult, RpcError>;
     fn symbols(&self, path: &Path, language: Language) -> Result<SymbolsResult, RpcError>;
 }
 
@@ -79,14 +88,18 @@ impl BackendRegistry {
     /// Resolve the file's language and dispatch `outline`. Returns
     /// `Ok(None)` when the extension is unknown or no backend handles it
     /// — handlers map that to an empty result, not an error.
-    pub fn outline(&self, path: &Path) -> Result<Option<OutlineResult>, RpcError> {
+    pub fn outline(
+        &self,
+        path: &Path,
+        signatures: bool,
+    ) -> Result<Option<OutlineResult>, RpcError> {
         let Some(language) = Language::detect(path) else {
             return Ok(None);
         };
         let Some(backend) = self.for_language(language) else {
             return Ok(None);
         };
-        backend.outline(path, language).map(Some)
+        backend.outline(path, language, signatures).map(Some)
     }
 
     pub fn symbols(&self, path: &Path) -> Result<Option<SymbolsResult>, RpcError> {
@@ -133,7 +146,12 @@ mod tests {
         fn supports(&self, language: Language) -> bool {
             self.languages.contains(&language)
         }
-        fn outline(&self, _path: &Path, language: Language) -> Result<OutlineResult, RpcError> {
+        fn outline(
+            &self,
+            _path: &Path,
+            language: Language,
+            _signatures: bool,
+        ) -> Result<OutlineResult, RpcError> {
             self.outline_calls.fetch_add(1, Ordering::SeqCst);
             Ok(OutlineResult {
                 language,
@@ -159,13 +177,13 @@ mod tests {
 
         // Rust hits the specialist first, not the generalist.
         let path = PathBuf::from("a.rs");
-        let _ = reg.outline(&path).unwrap().expect("rust handled");
+        let _ = reg.outline(&path, false).unwrap().expect("rust handled");
         assert_eq!(rust_only.outline_calls.load(Ordering::SeqCst), 1);
         assert_eq!(everything.outline_calls.load(Ordering::SeqCst), 0);
 
         // Python falls through to the generalist.
         let py = PathBuf::from("a.py");
-        let _ = reg.outline(&py).unwrap().expect("python handled");
+        let _ = reg.outline(&py, false).unwrap().expect("python handled");
         assert_eq!(everything.outline_calls.load(Ordering::SeqCst), 1);
     }
 
@@ -179,7 +197,10 @@ mod tests {
     fn registry_returns_none_for_unknown_extension() {
         let mut reg = BackendRegistry::new();
         reg.register(Arc::new(CountingBackend::new(vec![Language::Rust])));
-        assert!(reg.outline(&PathBuf::from("README.md")).unwrap().is_none());
+        assert!(reg
+            .outline(&PathBuf::from("README.md"), false)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -187,6 +208,9 @@ mod tests {
         let mut reg = BackendRegistry::new();
         reg.register(Arc::new(CountingBackend::new(vec![Language::Python])));
         // Rust is detected but no backend claims it.
-        assert!(reg.outline(&PathBuf::from("a.rs")).unwrap().is_none());
+        assert!(reg
+            .outline(&PathBuf::from("a.rs"), false)
+            .unwrap()
+            .is_none());
     }
 }

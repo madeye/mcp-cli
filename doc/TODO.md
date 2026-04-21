@@ -223,9 +223,16 @@ tool-output bytes 60–90 % so the agent burns less context per call.
 - [x] `search.grep` compact mode: bucket by file with match count +
       first/last line numbers; full-detail still emitted when
       `compact: false` (default).
-- [ ] `code.outline` `signatures-only` formatter (rtk
-      `read --aggressive` equivalent) reusing the existing tree-sitter
-      parse cache.
+- [x] `code.outline` `signatures-only` formatter. `CodeOutlineParams`
+      grows `signatures_only: bool` (default `false`); when set, each
+      entry carries a `signature` field with the declaration header
+      (body stripped, whitespace collapsed). Body detection walks the
+      tree-sitter node's `body` field first, then `BODY_KINDS`
+      descendants up to depth 4 — handles the Go `type_declaration ->
+      type_spec -> struct_type` shape without per-language code.
+      Bodiless declarations (constants, type aliases, unit structs)
+      fall back to the first line. Bridge schemas + `doc/PROTOCOL.md`
+      updated; unit tests cover rust/python/ts/go/c.
 - [ ] `fs.read` `?strip-noise` flag for license headers, long base64
       blobs, generated-file markers.
 - [ ] New `tool.run` family (one MCP method per wrapped tool, dispatched

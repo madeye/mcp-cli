@@ -229,18 +229,19 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "code_outline",
-            "description": "Return the structural outline (top-level functions, types, classes, etc.) of a single source file via tree-sitter. Results are cached per file, invalidated by mtime + size. Supports rust, python, c, cpp, typescript, tsx, go. Unsupported extensions return an empty `entries` list with `language: null`.",
+            "description": "Return the structural outline (top-level functions, types, classes, etc.) of a single source file via tree-sitter. Results are cached per file, invalidated by mtime + size. Supports rust, python, c, cpp, typescript, tsx, go. Unsupported extensions return an empty `entries` list with `language: null`. Set `signatures_only: true` to attach a compact declaration header (e.g. `fn foo(x: u32) -> bool`) to each entry — useful when the agent wants signatures but not bodies.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Path relative to project root."}
+                    "path": {"type": "string", "description": "Path relative to project root."},
+                    "signatures_only": {"type": "boolean", "default": false, "description": "Populate each entry's `signature` with the declaration header up to the body."}
                 },
                 "required": ["path"]
             }
         },
         {
             "name": "code_outline_batch",
-            "description": "code_outline for many files in one MCP call. Response is a parallel list of {path, result?, error?}; per-request failures do not abort the batch.",
+            "description": "code_outline for many files in one MCP call. Response is a parallel list of {path, result?, error?}; per-request failures do not abort the batch. Each request may opt into `signatures_only` independently.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -248,7 +249,10 @@ fn tool_definitions() -> Value {
                         "type": "array",
                         "items": {
                             "type": "object",
-                            "properties": {"path": {"type": "string"}},
+                            "properties": {
+                                "path": {"type": "string"},
+                                "signatures_only": {"type": "boolean", "default": false}
+                            },
                             "required": ["path"]
                         },
                         "minItems": 1
