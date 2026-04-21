@@ -7,27 +7,50 @@ shell-tool wrappers.
 
 ## Headline numbers
 
-Measured on codex (`rust-v0.121.0`) analysing its own source tree
-— single-sample, full writeup in
-[`bench/codex-forkexec/results/2026-04-20-rust-v0.121.0-search-ctx.md`](./bench/codex-forkexec/results/2026-04-20-rust-v0.121.0-search-ctx.md)
-(latest), with the [first run](./bench/codex-forkexec/results/2026-04-20-rust-v0.121.0-prefer-mcp.md)
-and three intermediate iterations alongside.
+Both tables below come from single-sample runs on 2026-04-21 with
+the agent analysing `openai/codex@rust-v0.122.0` (identical prompt,
+same host). Full writeups linked in each section; earlier iterations
+live alongside under
+[`bench/codex-forkexec/results/`](./bench/codex-forkexec/results/) and
+[`bench/claudecode-forkexec/results/`](./bench/claudecode-forkexec/results/).
 
-| metric | baseline | with mcp-cli | delta |
+### Codex
+
+With `--sandbox danger-full-access` (the Seatbelt overhead on
+baseline's shell calls was concealing the win; full analysis in
+[`bench/codex-forkexec/results/2026-04-21-rust-v0.122.0-sandbox-ablation.md`](./bench/codex-forkexec/results/2026-04-21-rust-v0.122.0-sandbox-ablation.md)):
+
+| metric | baseline | cold mcp-cli | delta |
 |---|---:|---:|---:|
-| `execve` total | 83 | 22 | **−73 %** |
-| `rg` invocations | 13 | 0 | −100 % |
-| `sed` invocations | 50 | 2 | −96 % |
-| MCP calls on the daemon | 0 | 73 | *`search_grep` ×32 (31 with context), `fs_read` ×21, `code_symbols` ×6, …* |
-| wall clock (s) | 201 | 324 | +61 % |
+| `execve` total | 64 | 22 | **−66 %** |
+| wall clock (s) | 209 | 117 | **−44 %** |
+| input tokens | 1 931 010 | 694 446 | **−64 %** |
+| cached input tokens | 1 811 072 | 571 776 | −68 % |
+| MCP calls on the daemon | 0 | 66 | *`search_grep` ×30, `fs_read` ×20, `code_outline` ×12, `fs_scan` ×2, `git_status` ×2* |
 
-The wall-clock regression — every MCP call is atomic where bash
-is a pipeline — narrowed run-over-run as we collapsed two-call
-patterns server-side: 124 MCP turns / 375 s in the first run
-(`prefer-mcp`), 73 MCP turns / 324 s after `search_grep ?context`
-landed (this run). Each step of progress is a result file under
-[`bench/codex-forkexec/results/`](./bench/codex-forkexec/results/);
-they're worth reading as a sequence.
+Warm pass cuts cached input another 649 k tokens cold → warm even
+as the agent makes *more* calls — `search_cache` + `parse_cache` +
+prewarm amortising work as intended.
+
+### Claude Code
+
+Full writeup in
+[`bench/claudecode-forkexec/results/2026-04-21-rust-v0.122.0.md`](./bench/claudecode-forkexec/results/2026-04-21-rust-v0.122.0.md):
+
+| metric | baseline | cold mcp-cli | delta |
+|---|---:|---:|---:|
+| `execve` total | 85 | 15 | **−82 %** |
+| wall clock (s) | 219 | 208 | **−5 %** |
+| output tokens | 13 584 | 11 747 | −14 % |
+| MCP calls on the daemon | 0 | 29 | *`fs_read` ×17, `search_grep` ×9, `fs_scan` ×3* |
+
+Claude shells out harder than Codex by default (85 vs 64 execves),
+so the fork/exec win is bigger. Unlike Codex, Claude's cold pass
+already *beats* baseline wall-clock. Warm pass drops cached input
+−952 k tokens cold → warm despite making ~2× more calls.
+
+Each step of progress is a result file under the two `results/`
+dirs; they're worth reading as a sequence.
 
 ## Architecture
 
@@ -134,11 +157,17 @@ See [`doc/roadmap.md`](./doc/roadmap.md) and
   / `fs.scan`), tree-sitter `code.outline` / `code.symbols` parse
   cache, drop-in install (`mcp-cli install`), per-cwd auto-spawn,
   reconnect-on-dead, multi-bridge contention test, mimalloc +
-  buffer pool, first M5 benchmark numbers, M7 compaction foundation
-  (`?compact` on `git.status` / `search.grep`, `metrics.gain` +
-  `metrics.tool_latency`), and the `--prefer-mcp` path that made
-  the headline numbers above actually move.
-* **Open** — rust-analyzer / clangd language backends, compound /
-  batch MCP tools to close the wall-clock regression from the
-  benchmark, `io_uring` I/O, per-request arenas, optional LSP /
+  buffer pool, M5 codex-forkexec + M5-twin claudecode-forkexec
+  benches (three-pass baseline / cold / warm with full 6-col
+  comparison), M7 compaction foundation (`?compact` on
+  `git.status` / `search.grep`, `metrics.gain` +
+  `metrics.tool_latency`), the `--prefer-mcp` path, and compound /
+  batch MCP tools (`fs_read_batch`, `code_outline_batch`,
+  `code_symbols_batch`, `search_grep ?context`) — which together
+  closed the cold wall-clock regression so that cold mcp-cli is now
+  faster than baseline on both Codex and Claude Code (see tables
+  above).
+* **Open** — rust-analyzer / clangd language backends, further
+  compound/batch tool opportunities flagged by warm-pass call
+  patterns, `io_uring` I/O, per-request arenas, optional LSP /
   WASI mounting surfaces.
