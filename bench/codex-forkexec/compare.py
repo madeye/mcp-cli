@@ -139,6 +139,24 @@ def row(label: str, baseline, mcp, width: int = 30) -> str:
     return f"{label:<{width}}{fmt(baseline):>14}{fmt(mcp):>16}{fmt_delta(baseline, mcp):>14}"
 
 
+def row_warm(label: str, baseline, cold, warm, width: int = 30) -> str:
+    """Six-column row: metric | baseline | cold | cold Δ | warm | warm Δ (vs cold).
+
+    The final delta compares warm to cold, not to baseline — that's
+    the in-memory-cache payoff, which is the whole point of the
+    third run. The (warm vs baseline) number is derivable by eye
+    and would crowd the table.
+    """
+    return (
+        f"{label:<{width}}"
+        f"{fmt(baseline):>14}"
+        f"{fmt(cold):>16}"
+        f"{fmt_delta(baseline, cold):>14}"
+        f"{fmt(warm):>16}"
+        f"{fmt_delta(cold, warm):>14}"
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out-dir", required=True)
@@ -161,9 +179,11 @@ def main() -> int:
     if tracer == "shim":
         baseline_input = out / "baseline.counters"
         mcp_input = out / "mcp.counters"
+        warm_input = out / "mcp_warm.counters"
     else:
         baseline_input = out / "baseline.trace"
         mcp_input = out / "mcp.trace"
+        warm_input = out / "mcp_warm.trace"
     baseline_counts = (
         parse_trace.parse(str(baseline_input), tracer)
         if baseline_input.exists()
@@ -172,35 +192,59 @@ def main() -> int:
     mcp_counts = (
         parse_trace.parse(str(mcp_input), tracer) if mcp_input.exists() else None
     )
+    # Warm pass is optional — older artifact dirs won't have it, and
+    # we fall back to the original 4-column layout in that case.
+    warm_counts = (
+        parse_trace.parse(str(warm_input), tracer) if warm_input.exists() else None
+    )
+    has_warm = warm_counts is not None or (out / "mcp_warm.timing").exists()
 
     baseline_total = sum(baseline_counts.values()) if baseline_counts is not None else None
     mcp_total = sum(mcp_counts.values()) if mcp_counts is not None else None
+    warm_total = sum(warm_counts.values()) if warm_counts is not None else None
 
     baseline_wall = read_float(out / "baseline.timing")
     mcp_wall = read_float(out / "mcp.timing")
+    warm_wall = read_float(out / "mcp_warm.timing")
 
     baseline_tokens = parse_tokens(out / "baseline.stdout")
     mcp_tokens = parse_tokens(out / "mcp.stdout")
+    warm_tokens = parse_tokens(out / "mcp_warm.stdout") if has_warm else {}
+
+    def _row(label, base, cold, warm):
+        if has_warm:
+            return row_warm(label, base, cold, warm)
+        return row(label, base, cold)
 
     print(
         f"Codex fork/exec benchmark — target={args.target_repo}@{args.target_ref}"
     )
-    print("=" * 74)
-    header = f"{'metric':<30}{'baseline':>14}{'with mcp-cli':>16}{'delta':>14}"
+    width = 104 if has_warm else 74
+    print("=" * width)
+    if has_warm:
+        header = (
+            f"{'metric':<30}{'baseline':>14}"
+            f"{'cold mcp-cli':>16}{'cold Δ':>14}"
+            f"{'warm mcp-cli':>16}{'Δ vs cold':>14}"
+        )
+    else:
+        header = f"{'metric':<30}{'baseline':>14}{'with mcp-cli':>16}{'delta':>14}"
     print(header)
-    print("-" * 74)
-    print(row("execve total", baseline_total, mcp_total))
+    print("-" * width)
+    print(_row("execve total", baseline_total, mcp_total, warm_total))
 
     # Per-binary breakdown. Show every binary that was seen in
-    # *either* run — the headline DAEMON_REPLACED list goes first for
+    # *any* run — the headline DAEMON_REPLACED list goes first for
     # quick scanning, then any leftover binaries (sed, awk, nl, jq,
     # …) sorted by combined call count desc.
-    if baseline_counts is not None or mcp_counts is not None:
+    if baseline_counts is not None or mcp_counts is not None or warm_counts is not None:
         all_keys: set[str] = set()
-        if baseline_counts is not None:
-            all_keys.update(baseline_counts.keys())
-        if mcp_counts is not None:
-            all_keys.update(mcp_counts.keys())
+        for bag in (baseline_counts, mcp_counts, warm_counts):
+            if bag is not None:
+                all_keys.update(bag.keys())
+
+        def _get(bag, k):
+            return bag.get(k) if bag is not None else None
 
         # First the canonical "expected to be replaced" list, in its
         # declaration order, for stable diffing.
@@ -208,11 +252,12 @@ def main() -> int:
         for b in DAEMON_REPLACED:
             if b not in all_keys:
                 continue
-            base = baseline_counts.get(b) if baseline_counts is not None else None
-            with_mcp = mcp_counts.get(b) if mcp_counts is not None else None
-            if (base or 0) == 0 and (with_mcp or 0) == 0:
+            base = _get(baseline_counts, b)
+            cold = _get(mcp_counts, b)
+            warm = _get(warm_counts, b)
+            if (base or 0) == 0 and (cold or 0) == 0 and (warm or 0) == 0:
                 continue
-            print(row(f"  {b}", base or 0, with_mcp or 0))
+            print(_row(f"  {b}", base or 0, cold or 0, warm or 0 if has_warm else None))
             seen.add(b)
 
         # Then everything else (sed, awk, jq, nl, …), sorted by
@@ -220,48 +265,75 @@ def main() -> int:
         leftovers = [k for k in all_keys if k not in seen]
         leftovers.sort(
             key=lambda k: -(
-                (baseline_counts or {}).get(k, 0) + (mcp_counts or {}).get(k, 0)
+                (baseline_counts or {}).get(k, 0)
+                + (mcp_counts or {}).get(k, 0)
+                + (warm_counts or {}).get(k, 0)
             )
         )
         for b in leftovers:
-            base = baseline_counts.get(b) if baseline_counts is not None else None
-            with_mcp = mcp_counts.get(b) if mcp_counts is not None else None
-            if (base or 0) == 0 and (with_mcp or 0) == 0:
+            base = _get(baseline_counts, b)
+            cold = _get(mcp_counts, b)
+            warm = _get(warm_counts, b)
+            if (base or 0) == 0 and (cold or 0) == 0 and (warm or 0) == 0:
                 continue
-            print(row(f"  {b}", base or 0, with_mcp or 0))
+            print(_row(f"  {b}", base or 0, cold or 0, warm or 0 if has_warm else None))
 
     # Bridge / daemon should each show up exactly once when on.
+    # Warm pass reuses the cold daemon, so mcp-cli-daemon should be
+    # 0 in the warm column (no second spawn).
     for marker in ("mcp-cli-bridge", "mcp-cli-daemon"):
         base = baseline_counts.get(marker) if baseline_counts is not None else None
-        with_mcp = mcp_counts.get(marker) if mcp_counts is not None else None
-        if (base or 0) == 0 and (with_mcp or 0) == 0:
+        cold = mcp_counts.get(marker) if mcp_counts is not None else None
+        warm = warm_counts.get(marker) if warm_counts is not None else None
+        if (base or 0) == 0 and (cold or 0) == 0 and (warm or 0) == 0:
             continue
-        print(row(f"  {marker}", base or 0, with_mcp or 0))
+        print(_row(f"  {marker}", base or 0, cold or 0, warm or 0 if has_warm else None))
 
-    print(row("wall clock (s)", baseline_wall, mcp_wall))
-    print(row("input tokens", baseline_tokens.get("input"), mcp_tokens.get("input")))
+    print(_row("wall clock (s)", baseline_wall, mcp_wall, warm_wall))
     print(
-        row(
+        _row(
+            "input tokens",
+            baseline_tokens.get("input"),
+            mcp_tokens.get("input"),
+            warm_tokens.get("input") if has_warm else None,
+        )
+    )
+    print(
+        _row(
             "  cached input tokens",
             baseline_tokens.get("cached_input"),
             mcp_tokens.get("cached_input"),
+            warm_tokens.get("cached_input") if has_warm else None,
         )
     )
-    print(row("output tokens", baseline_tokens.get("output"), mcp_tokens.get("output")))
+    print(
+        _row(
+            "output tokens",
+            baseline_tokens.get("output"),
+            mcp_tokens.get("output"),
+            warm_tokens.get("output") if has_warm else None,
+        )
+    )
 
     # MCP tool-call routing — proves whether codex actually used the
     # mounted MCP server's tools or fell back to its built-in Bash.
     baseline_mcp_calls = parse_mcp_tool_calls(out / "baseline.stdout")
     mcp_mcp_calls = parse_mcp_tool_calls(out / "mcp.stdout")
-    if baseline_mcp_calls or mcp_mcp_calls:
-        keys = sorted(set(baseline_mcp_calls) | set(mcp_mcp_calls))
+    warm_mcp_calls = (
+        parse_mcp_tool_calls(out / "mcp_warm.stdout") if has_warm else {}
+    )
+    if baseline_mcp_calls or mcp_mcp_calls or warm_mcp_calls:
+        keys = sorted(
+            set(baseline_mcp_calls) | set(mcp_mcp_calls) | set(warm_mcp_calls)
+        )
         print()
         print("codex MCP tool calls (server/tool)")
-        print("-" * 74)
+        print("-" * width)
         for k in keys:
             base = baseline_mcp_calls.get(k, 0)
-            with_mcp = mcp_mcp_calls.get(k, 0)
-            print(row(f"  {k}", base, with_mcp))
+            cold = mcp_mcp_calls.get(k, 0)
+            warm = warm_mcp_calls.get(k, 0) if has_warm else None
+            print(_row(f"  {k}", base, cold, warm))
 
     # Daemon-side per-tool latency, written by run.sh after the with-mcp
     # run via `metrics.tool_latency`. Only the with-mcp run has a daemon

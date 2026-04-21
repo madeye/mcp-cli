@@ -25,10 +25,17 @@ measure that directly.
 
 1. Clones a target repo (default: **the Codex repo itself, at its
    latest release tag**) into a fresh tempdir.
-2. Runs Codex twice with the same prompt:
+2. Runs Codex three times with the same prompt:
    * **Baseline** — vanilla Codex, no MCP servers configured.
-   * **mcp-cli** — same Codex install, but with `mcp-cli install
-     --target codex` already applied so the bridge is mounted.
+   * **Cold mcp-cli** — same Codex install, with `mcp-cli install
+     --target codex` applied so the bridge is mounted. Daemon is
+     freshly spawned; `search_cache` + `parse_cache` are empty.
+   * **Warm mcp-cli** — same `CODEX_HOME` as the cold pass, so the
+     bridge reconnects to the already-running daemon. The run.sh
+     script patches the generated config to set a long
+     `--idle-timeout=30m` on the daemon so it survives between
+     passes. Delta vs cold isolates the payoff from in-memory
+     `search_cache` + `parse_cache` (and fully-finished prewarm).
 3. Wraps each run with an `execve` tracer (auto-picked):
    * Linux: `strace -e trace=execve -f -o trace.log codex exec ...`
    * macOS root: `dtruss -f -t execve codex exec ...`
@@ -93,24 +100,33 @@ python3 bench/codex-forkexec/compare.py \
 
 ```
 Codex fork/exec benchmark — target=openai/codex@v0.42.0
-====================================================================
-                           baseline      with mcp-cli      delta
-execve total                   <N0>             <N1>      <N1-N0>
-  cat                          <c0>             <c1>      …
-  grep                         <g0>             <g1>      …
-  git                          <git0>           <git1>    …
-  rg                           <rg0>            <rg1>     …
-wall clock (s)                 <t0>             <t1>      …
-input tokens                   <ti0>            <ti1>     …
-output tokens                  <to0>            <to1>     …
+========================================================================================================
+metric                              baseline    cold mcp-cli        cold Δ    warm mcp-cli     Δ vs cold
+execve total                            <N0>           <N1>         <N1-N0>           <N2>     <N2-N1>
+  cat                                    <c0>           <c1>               …           <c2>           …
+  grep                                   <g0>           <g1>               …           <g2>           …
+  ...
+  mcp-cli-daemon                         0              1                 +1            0               -1
+wall clock (s)                          <t0>           <t1>               …            <t2>     <t2-t1>
+input tokens                           <ti0>          <ti1>               …           <ti2>           …
+output tokens                          <to0>          <to1>               …           <to2>           …
 ```
 
-The headline number is `execve total → delta`. A healthy
-mcp-cli-equipped run shows the binaries the daemon obviates
-(`cat`, `grep`, `rg`, `git`, `find`, `head`, `tail`, `ls`)
-collapsing to near zero, with `mcp-cli-bridge` / `mcp-cli-daemon`
-showing up exactly once per session (the auto-spawn) instead of
-hundreds of per-call `cat` / `grep` invocations.
+Two headline numbers now:
+
+* `execve total → cold Δ` — the original fork/exec win. Binaries
+  the daemon obviates (`cat`, `grep`, `rg`, `git`, `find`, `head`,
+  `tail`, `ls`) should collapse to near zero in the cold column,
+  with `mcp-cli-bridge` / `mcp-cli-daemon` showing up exactly once
+  (the auto-spawn).
+* `wall clock (s) → Δ vs cold` — the in-memory-cache payoff. The
+  warm pass reuses the daemon, so it should execve `mcp-cli-daemon`
+  zero times (daemon already running) and benefit from a populated
+  `search_cache` + `parse_cache`. A meaningfully negative `Δ vs
+  cold` is the claim we can make for the amortized-startup story.
+
+If the script is run against an older artifact dir without a warm
+pass, `compare.py` falls back to the original four-column layout.
 
 ## Caveats and known limitations
 

@@ -285,9 +285,38 @@ log "installing mcp-cli into CODEX_HOME=$MCP_HOME"
 # benchmark measures model variance — codex ignores the MCP
 # server entirely (the M5 v1 result demonstrated exactly that).
 CODEX_HOME="$MCP_HOME" "$MCP_CLI" install --target codex --prefer-mcp >/dev/null
+
+# Patch the generated mcp_servers.mcp-cli args so the auto-spawned
+# daemon gets a long idle-timeout. The warm pass below reuses this
+# CODEX_HOME (same socket), so the daemon must outlive the cold run;
+# the daemon default idle-timeout is short enough that a slow codex
+# session would let it exit between passes and we'd measure a cold
+# daemon twice.
+python3 - "$MCP_HOME/config.toml" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+txt = p.read_text()
+marker = "args = []"
+repl = 'args = ["--daemon-arg=--idle-timeout=30m"]'
+if marker not in txt:
+    sys.exit(f"bench: expected {marker!r} in {p}, got:\n{txt}")
+p.write_text(txt.replace(marker, repl, 1))
+PY
+
+# Cold pass: fresh daemon, empty search_cache + parse_cache, prewarm
+# walker just started. Baseline MCP measurement.
 run_one mcp "$MCP_HOME"
 
+# Warm pass: same CODEX_HOME -> same canonical socket, so the bridge
+# reconnects to the daemon we just exercised. search_cache +
+# parse_cache are already populated (ChangeLog version unchanged
+# since nothing mutated the tree), and prewarm has long since
+# finished. Delta vs cold is the in-memory-cache payoff.
+run_one mcp_warm "$MCP_HOME"
+
 # Snapshot daemon-side latency counters before the daemon idle-exits.
+# After both passes so the per-tool counters include cold+warm calls.
 # Best-effort: if codex left the bridge running, this hits a live
 # daemon and pulls per-tool counters; if the daemon already shut down
 # it just times out and we skip the section in compare.py.
