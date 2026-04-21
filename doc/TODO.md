@@ -246,20 +246,40 @@ tool-output bytes 60–90 % so the agent burns less context per call.
       Bridge schemas + `doc/PROTOCOL.md` + `doc/INTEGRATION.md`
       updated; 13 unit tests cover license / base64 / generated /
       shebang preservation / overlap resolution.
-- [ ] New `tool.run` family (one MCP method per wrapped tool, dispatched
-      to a `ToolBackend` trait that mirrors `LanguageBackend`):
-    - [ ] `tool.cargo_test`, `tool.cargo_clippy`, `tool.cargo_build`
-          consuming `--message-format=json`. Failures + warnings only.
-    - [ ] `tool.test_runner` adapter — `pytest --json-report`,
-          `jest --json`, `go test -json`, `vitest --reporter=json`.
-    - [ ] `tool.lint` adapter — `eslint --format json`,
-          `tsc --pretty false`, `ruff check --output-format=json`,
-          `golangci-lint run --out-format json`.
-    - [ ] `tool.gh` adapter for `pr list`, `pr view`, `issue list`,
-          `run list` (via `gh ... --json ...`).
-- [ ] Per-`(command, cwd, file-mtime-fingerprint)` LRU cache so a
-      re-run with no source changes returns the cached structured
-      result, the same way `search.grep` caches by ChangeLog version.
+- [ ] Generic `tool.run` RPC. Takes a shell command + cwd and
+      applies three tool-agnostic primitives:
+    - **Tee-on-failure** — raw stdout/stderr to
+      `${XDG_CACHE}/mcp-cli/tee/<hash>.log` on non-zero exit; the
+      path comes back in the response so the agent can `fs.read` the
+      full output only when the summary isn't enough.
+    - **Byte-cap truncation** — head N lines + tail N lines with a
+      `(X lines elided)` marker, configurable cap.
+    - **`(command, cwd, file-mtime-fingerprint)` LRU cache** —
+      reuses the `search_cache` pattern. Re-running with no source
+      changes returns the cached result instead of re-executing.
+
+      Deliberately language-agnostic. Per-framework JSON-format
+      adapters (`cargo --message-format=json`, `pytest --json-report`,
+      `jest --json`, `ruff --output-format=json`, etc.) are specialist
+      work that scales poorly (N×M adapters to track upstream format
+      drift) — same reasoning as the M3 rust-analyzer/clangd pivot.
+      Callers who want tighter per-tool output can wrap the command
+      themselves before calling `tool.run`.
+- [ ] `tool.gh` adapter for `pr list`, `pr view`, `issue list`,
+      `run list` (via `gh ... --json ...`). Kept as a named tool
+      because `gh` is one binary everywhere and the JSON shape is
+      stable — the usual specialist-maintenance argument doesn't
+      apply.
+- [ ] `fs.scan ?compact` — directory tree roll-up with per-directory
+      counts (`src/ (8 files)`) instead of the flat path list. Same
+      compaction primitive shape as `git.status ?compact` and
+      `search.grep ?compact`.
+- [ ] `git.log` RPC — one-line commits, optional `since` / `author`
+      / `max_count`. Small handler; fills the gap agents currently
+      patch with raw `Bash("git log …")`.
+- [ ] `git.diff` RPC — condensed patch (unchanged file-header chrome
+      stripped, context lines shrunk). Larger than `git.log`; useful
+      for PR-review flows.
 - [x] `metrics.gain` RPC (`crates/daemon/src/metrics.rs`): per-tool
       counters of (raw_bytes, compacted_bytes, calls). Backed by
       atomics on the daemon side; cheap to keep and read. Bridge
