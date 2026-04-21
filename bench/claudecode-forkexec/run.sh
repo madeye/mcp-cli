@@ -221,9 +221,6 @@ run_claude() {
     [[ -n "$extra_path" ]] && path_prefix="$extra_path:"
 
     # Claude Code equivalents of the codex flags:
-    #   --bare                        strip hooks/plugins/auto-memory
-    #                                 so results aren't skewed by the
-    #                                 user's ~/.claude.json population
     #   --dangerously-skip-permissions no interactive approval; matches
     #                                 `codex --sandbox workspace-write
     #                                 --prefer-mcp` non-interactive
@@ -235,9 +232,18 @@ run_claude() {
     #   --add-dir $OUT_DIR            lets shim counter writes and
     #                                 daemon sockets/logs land in
     #                                 the bench output dir
+    #
+    # NOTE on --bare: we intentionally DO NOT pass --bare. It blocks
+    # keychain reads, which breaks macOS OAuth; in environments
+    # without ANTHROPIC_API_KEY set explicitly, claude errors out with
+    # "Not logged in" under --bare. The trade is that the user's
+    # hooks / plugins / CLAUDE.md auto-discovery run in all three
+    # passes — comparative deltas stay meaningful because the bias
+    # is constant across baseline/cold/warm, but absolute numbers
+    # reflect the user's environment. If you want the --bare-isolated
+    # numbers, set ANTHROPIC_API_KEY and re-add --bare to claude_args.
     local claude_args=(
         -p
-        --bare
         --dangerously-skip-permissions
         --add-dir "$OUT_DIR"
         --output-format stream-json
