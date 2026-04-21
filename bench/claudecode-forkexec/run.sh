@@ -198,7 +198,14 @@ log "wrote --mcp-config to $MCP_CONFIG_FILE"
 # in place would let the agent accidentally modify files; the prompt
 # says "read-only analysis" but belt-and-braces. TodoWrite / Task /
 # agent-internal orchestration tools stay enabled.
-MCP_DISALLOWED_TOOLS="Bash Read Grep Glob Edit Write NotebookEdit"
+#
+# Comma-separated, not space-separated — `--disallowed-tools` accepts
+# either per `--help`, but it's declared as variadic (`<tools...>`)
+# and when space-separated it consumes the following positional
+# (the prompt) as one of the tool names. Claude then errors with
+# "Input must be provided either through stdin or as a prompt
+# argument when using --print". Comma form dodges the variadic.
+MCP_DISALLOWED_TOOLS="Bash,Read,Grep,Glob,Edit,Write,NotebookEdit"
 
 run_claude() {
     local label=$1
