@@ -310,6 +310,11 @@ pub struct FsScanParams {
     /// than this, `truncated` is set and the tail is dropped.
     #[serde(default)]
     pub max_results: Option<usize>,
+    /// When true, the response carries `compact` and omits `files` — a
+    /// roll-up by immediate parent directory, usually 10–100× smaller
+    /// than the flat path list for a non-trivial tree.
+    #[serde(default)]
+    pub compact: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -319,8 +324,30 @@ pub struct FsScanResult {
     /// the scan was running.
     pub version: u64,
     /// Paths relative to the project root. Honours gitignore; excludes `.git/`.
+    /// Omitted in compact mode (see `compact`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
     pub truncated: bool,
+    /// Roll-up requested via `params.compact = true`. Omitted in raw mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact: Option<FsScanCompact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FsScanCompact {
+    /// One entry per immediate parent directory actually observed,
+    /// ordered by `count` descending (alphabetical tie-break). Top-
+    /// level files use `"."`. When the bucket count exceeds the
+    /// configured cap, the tail is summed into a synthetic `(other)`
+    /// row so `total` always reconciles.
+    pub by_dir: Vec<FsScanDirBucket>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FsScanDirBucket {
+    pub dir: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

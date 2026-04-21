@@ -129,17 +129,35 @@ the ring) and must re-snapshot via `fs.scan`.
 
 ```jsonc
 // params
-{"path": "crates", "max_results": 1000}
+{"path": "crates", "max_results": 1000, "compact": false}
 
-// result
+// result (raw)
 {"version": 8800, "files": ["crates/protocol/src/lib.rs", …],
  "truncated": false}
+
+// result (compact)
+{"version": 8800, "truncated": false,
+ "compact": {
+   "by_dir": [
+     {"dir": "crates/daemon/src", "count": 18},
+     {"dir": "crates/mcp-bridge/src", "count": 6},
+     …
+   ],
+   "total": 47}}
 ```
 
 Full enumeration. Gitignore-aware, hard-excludes `.git/`. The
 returned `version` is captured at the start of the walk so a
 follow-up `fs.changes(since: version)` closes any race with
 events landing during the scan.
+
+`compact: true` swaps the flat `files` list for a directory
+roll-up — one `{dir, count}` row per immediate parent directory,
+ordered by count descending. Top-level files bucket as `"."`.
+When the bucket count exceeds 32 the tail is summed into a
+synthetic `(other)` row so `total` always reconciles. Usually
+10–100× smaller than the flat list for a non-trivial tree; ideal
+for "what's in this repo" exploration before drilling in.
 
 ### `git.status`
 
