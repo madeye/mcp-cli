@@ -6,14 +6,15 @@
 # cold mcp-cli, warm mcp-cli), counts per-binary fork/exec, and
 # prints a comparison table via compare.py.
 #
-# Three tracer backends, auto-picked in order of preference:
+# Two tracer backends, auto-picked in order of preference:
 #   - strace   (Linux, requires strace on PATH)
-#   - dtruss   (macOS, requires root)
 #   - shim     (portable; PATH-shadows known binaries with bash
 #              wrappers that bump a counter file before delegating
-#              to the real binary)
+#              to the real binary — the macOS path, and the Linux
+#              fallback when strace isn't installed)
 #
-# Override with TRACER={strace,dtruss,shim}.
+# Override with TRACER={strace,shim}. `dtruss` was dropped because
+# it required root on macOS, which is out of scope for this bench.
 
 set -euo pipefail
 
@@ -61,13 +62,6 @@ BRIDGE_ABS="$(dirname "$MCP_CLI_ABS")/mcp-cli-bridge"
 if [[ -z "$TRACER" ]]; then
     case "$(uname -s)" in
     Linux) command -v strace >/dev/null 2>&1 && TRACER=strace || TRACER=shim ;;
-    Darwin)
-        if command -v dtruss >/dev/null 2>&1 && [[ "$(id -u)" -eq 0 ]]; then
-            TRACER=dtruss
-        else
-            TRACER=shim
-        fi
-        ;;
     *) TRACER=shim ;;
     esac
 fi
@@ -75,16 +69,9 @@ log "tracer: $TRACER"
 
 case "$TRACER" in
 strace) require strace ;;
-dtruss)
-    require dtruss
-    [[ "$(id -u)" -eq 0 ]] || {
-        log "dtruss requires root"
-        exit 1
-    }
-    ;;
 shim) ;; # Generated below per-run.
 *)
-    log "unknown tracer: $TRACER"
+    log "unknown tracer: $TRACER (supported: strace, shim)"
     exit 1
     ;;
 esac
@@ -278,12 +265,6 @@ run_claude() {
             strace -e trace=execve -f -qq -o "$trace" -- \
             "$CLAUDE" "${claude_args[@]}" \
             <"$PROMPT_FILE" >"$stdout" 2>"$stderr" || true
-        ;;
-    dtruss)
-        "${env_args[@]}" \
-            dtruss -f -t execve \
-            "$CLAUDE" "${claude_args[@]}" \
-            <"$PROMPT_FILE" >"$stdout" 2>"$trace" || true
         ;;
     shim)
         "${env_args[@]}" \

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Count execve events per binary from a strace, dtruss, or shim trace.
+"""Count execve events per binary from a strace or shim trace.
 
 Output: JSON object {"total": <int>, "by_binary": {"basename": <int>}}
 to stdout. Designed to be cheap and tolerant of malformed lines —
@@ -7,13 +7,12 @@ better to undercount one binary than blow up on a corrupted trace.
 
 Usage:
     parse_trace.py --tracer strace --input baseline.trace
-    parse_trace.py --tracer dtruss --input baseline.trace
     parse_trace.py --tracer shim   --input baseline.counters/
 
 The shim form expects `--input` to point at a *directory* containing
 `<binary>.count` files written by the PATH-shadow shim wrappers (one
-line per invocation). Used on macOS without root and as a fallback
-where strace / dtruss aren't available.
+line per invocation). Used on macOS (no root-gated tracer) and as a
+fallback on Linux where strace isn't installed.
 """
 
 from __future__ import annotations
@@ -32,10 +31,6 @@ from pathlib import Path
 # the kernel walking PATH and tell us nothing about agent behaviour.
 _STRACE_RE = re.compile(r'execve\("([^"]+)"[^=]*=\s*0\b')
 
-# dtruss -t execve lines look like:
-#   12345/0x123:  execve("/usr/bin/cat\0", 0x..., 0x...)         = 0 0
-_DTRUSS_RE = re.compile(r'execve\("([^"]+?)\\0?"[^=]*=\s*0\b')
-
 
 def basename(path: str) -> str:
     name = os.path.basename(path)
@@ -47,8 +42,6 @@ def parse(path: str, tracer: str) -> Counter:
         return _parse_shim(path)
     if tracer == "strace":
         rx = _STRACE_RE
-    elif tracer == "dtruss":
-        rx = _DTRUSS_RE
     else:
         raise SystemExit(f"unknown tracer: {tracer}")
 
@@ -93,12 +86,12 @@ def main() -> int:
     ap.add_argument(
         "--input",
         required=True,
-        help="trace file (strace/dtruss) or counter directory (shim)",
+        help="trace file (strace) or counter directory (shim)",
     )
     ap.add_argument(
         "--tracer",
         required=True,
-        choices=("strace", "dtruss", "shim"),
+        choices=("strace", "shim"),
         help="which tracer produced the input",
     )
     args = ap.parse_args()

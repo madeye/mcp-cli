@@ -39,10 +39,11 @@ the `claude` CLI instead of `codex exec`.
      the daemon survives between the cold and warm passes.
 3. Wraps each run with an `execve` tracer (auto-picked):
    * Linux: `strace -e trace=execve -f -o trace.log claude -p ...`
-   * macOS root: `dtruss -f -t execve claude -p ...`
-   * Otherwise: **shim mode** — PATH-shadow wrappers that bump a
-     per-binary counter file before delegating to the real binary.
-     Same mechanism as the codex twin.
+   * Otherwise (macOS, or Linux without `strace`): **shim mode** —
+     PATH-shadow wrappers that bump a per-binary counter file before
+     delegating to the real binary. Same mechanism as the codex twin.
+     (An earlier `dtruss` backend was dropped because it needed
+     root on macOS, which is out of scope.)
 4. Parses each trace / counter dir via `parse_trace.py` (shared with
    codex-forkexec via symlink), then `compare.py` tabulates
    per-binary `execve` count, wall-clock, Claude Code token usage
@@ -93,9 +94,10 @@ Prereqs:
 * `mcp-cli`, `mcp-cli-bridge`, and `mcp-cli-daemon` on `PATH` —
   `cargo install --path crates/mcp-cli` from the repo root, plus
   symlinks for the bridge and daemon binaries from `target/release/`.
-* Linux: `strace` installed, no extra privileges needed.
-* macOS: must run as root for `dtruss` to attach, otherwise shim
-  mode kicks in.
+* Linux: `strace` installed (optional; shim mode is used when
+  `strace` isn't available).
+* macOS: no extra tooling — shim mode is always used; there's no
+  root-gated tracer in scope for this bench.
 * `git`, `python3`.
 
 ```sh
@@ -121,7 +123,7 @@ want it re-tabulated:
 ```sh
 python3 bench/claudecode-forkexec/compare.py \
     --out-dir /path/to/run-artifacts \
-    --tracer strace      # or dtruss; auto-detects from `uname -s`
+    --tracer strace      # or shim; auto-detects from `uname -s`
 ```
 
 ## Output
