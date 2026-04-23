@@ -187,7 +187,7 @@ pub fn fs_scan(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json:
 
     for entry in WalkBuilder::new(&scan_root)
         .standard_filters(true)
-        .hidden(false)
+        .hidden(true)
         .build()
     {
         let entry = match entry {
