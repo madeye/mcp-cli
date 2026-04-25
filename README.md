@@ -52,6 +52,14 @@ already *beats* baseline wall-clock. Warm pass drops cached input
 Each step of progress is a result file under the two `results/`
 dirs; they're worth reading as a sequence.
 
+There is now a matching Claude Code twin benchmark under
+[`bench/claudecode-forkexec/`](./bench/claudecode-forkexec/): same
+target workload, but three passes (`baseline`, `cold mcp-cli`, `warm
+mcp-cli`) so the daemon's cross-session cache payoff is visible too.
+The Codex run above is still the headline result in the README; the
+Claude Code twin broadens the measurement surface beyond a single
+agent and is the next place to fold into the top-level story.
+
 ## Architecture
 
 ```

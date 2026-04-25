@@ -144,10 +144,14 @@ identified but not pursued in this iteration:
 ## Codex fork/exec reduction benchmark (M5)
 
 Reproducible measurement that the daemon actually erases per-call
-kernel overhead. Lives under `bench/codex-forkexec/`. Five result
-files now under `bench/codex-forkexec/results/`; the
+kernel overhead. The current headline run still lives under
+`bench/codex-forkexec/`; five result files now sit under
+`bench/codex-forkexec/results/`, and the
 [v5 run](../bench/codex-forkexec/results/2026-04-20-rust-v0.121.0-search-ctx.md)
-is the current headline.
+is the README headline today. There is now also a Claude Code twin
+under `bench/claudecode-forkexec/`: same target workload, but a
+three-pass `baseline` / `cold mcp-cli` / `warm mcp-cli` shape so the
+daemon's cache reuse shows up explicitly.
 
 - [x] `bench/codex-forkexec/run.sh` orchestrator: clone target at
       its latest release tag, run the analysis prompt twice
