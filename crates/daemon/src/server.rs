@@ -40,6 +40,7 @@ pub struct Daemon {
     pub changelog: Arc<ChangeLog>,
     pub search_cache: Arc<SearchCache>,
     pub tool_run_cache: Arc<Mutex<HashMap<String, protocol::ToolRunResult>>>,
+    pub parse_cache: Arc<ParseCache>,
     pub backends: BackendRegistry,
     pub frame_pool: Arc<BufferPool>,
     pub metrics: Arc<ToolMetrics>,
@@ -90,6 +91,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
         changelog,
         search_cache,
         tool_run_cache,
+        parse_cache,
         backends,
         frame_pool,
         metrics,
@@ -288,6 +290,12 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
         protocol::methods::CODE_OUTLINE_BATCH => handlers::code_outline_batch(daemon, req.params),
         protocol::methods::CODE_SYMBOLS => handlers::code_symbols(daemon, req.params),
         protocol::methods::CODE_SYMBOLS_BATCH => handlers::code_symbols_batch(daemon, req.params),
+        protocol::methods::CODE_IMPORTS => handlers::code_imports(daemon, req.params),
+        protocol::methods::CODE_DEPENDENCIES => handlers::code_dependencies(daemon, req.params),
+        protocol::methods::CODE_FIND_OCCURRENCES => {
+            handlers::code_find_occurrences(daemon, req.params)
+        }
+        protocol::methods::FS_READ_SKELETON => handlers::fs_read_skeleton(daemon, req.params),
         protocol::methods::TOOL_RUN => handlers::tool_run(daemon, req.params),
         protocol::methods::TOOL_GH => handlers::tool_gh(daemon, req.params),
         protocol::methods::METRICS_GAIN => handlers::metrics_gain(daemon, req.params),

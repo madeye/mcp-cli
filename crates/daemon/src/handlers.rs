@@ -1,4 +1,5 @@
 use std::fs::{self, File};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
 
@@ -7,18 +8,22 @@ use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKin
 use ignore::WalkBuilder;
 use memmap2::Mmap;
 use protocol::{
-    ChangeKind, CodeOutlineBatchItem, CodeOutlineBatchParams, CodeOutlineBatchResult,
-    CodeOutlineParams, CodeOutlineResult, CodeSymbolsBatchItem, CodeSymbolsBatchParams,
-    CodeSymbolsBatchResult, CodeSymbolsParams, CodeSymbolsResult, FsApplyPatchParams,
-    FsApplyPatchResult, FsChangesParams, FsChangesResult, FsReadBatchItem, FsReadBatchParams,
-    FsReadBatchResult, FsReadParams, FsReadResult, FsReplaceAllParams, FsReplaceAllResult,
-    FsScanParams, FsScanResult, FsSnapshotResult, GitCommit, GitDiffParams, GitDiffResult,
-    GitLogParams, GitLogResult, GitStatusEntry, GitStatusParams, GitStatusResult,
-    MetricsGainParams, MetricsToolLatencyParams, RpcError, SearchContextLine, SearchGrepParams,
-    SearchGrepResult, SearchHit, ToolGhParams, ToolGhResult, ToolRunParams, ToolRunResult,
+    ChangeKind, CodeDependenciesParams, CodeDependenciesResult, CodeFindOccurrencesParams,
+    CodeFindOccurrencesResult, CodeImportsParams, CodeImportsResult, CodeOccurrence,
+    CodeOutlineBatchItem, CodeOutlineBatchParams, CodeOutlineBatchResult, CodeOutlineParams,
+    CodeOutlineResult, CodeSymbolsBatchItem, CodeSymbolsBatchParams, CodeSymbolsBatchResult,
+    CodeSymbolsParams, CodeSymbolsResult, DependencyEdge, FsApplyPatchParams, FsApplyPatchResult,
+    FsChangesParams, FsChangesResult, FsReadBatchItem, FsReadBatchParams, FsReadBatchResult,
+    FsReadParams, FsReadResult, FsReadSkeletonParams, FsReadSkeletonResult, FsReplaceAllParams,
+    FsReplaceAllResult, FsScanParams, FsScanResult, FsSnapshotResult, GitCommit, GitDiffParams,
+    GitDiffResult, GitLogParams, GitLogResult, GitStatusEntry, GitStatusParams, GitStatusResult,
+    ImportEntry, MetricsGainParams, MetricsToolLatencyParams, RpcError, SearchContextLine,
+    SearchGrepParams, SearchGrepResult, SearchHit, SkeletonElidedRegion, ToolGhParams,
+    ToolGhResult, ToolRunParams, ToolRunResult,
 };
 
 use crate::compact;
+use crate::languages::Language;
 use crate::search_cache::SearchKey;
 use crate::server::{resolve_within, Daemon};
 
@@ -973,6 +978,392 @@ fn code_symbols_inner(
     })
 }
 
+pub fn code_imports(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: CodeImportsParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let result = code_imports_inner(daemon, &params.path)?;
+    Ok(serde_json::to_value(result).unwrap())
+}
+
+fn code_imports_inner(daemon: &Daemon, path: &str) -> Result<CodeImportsResult, RpcError> {
+    let abs = resolve_within(&daemon.root, path)?;
+    let language = Language::detect(&abs);
+    let content =
+        fs::read_to_string(&abs).map_err(|e| RpcError::new(-32080, format!("read: {e}")))?;
+    let base_dir = abs.parent().unwrap_or(&daemon.root);
+    let imports = language
+        .map(|lang| extract_imports(lang, &content, base_dir, &daemon.root))
+        .unwrap_or_default();
+    Ok(CodeImportsResult {
+        path: path.to_string(),
+        language: language.map(|l| l.name().to_string()),
+        imports,
+    })
+}
+
+fn extract_imports(
+    lang: Language,
+    content: &str,
+    base_dir: &Path,
+    root: &Path,
+) -> Vec<ImportEntry> {
+    let mut imports = Vec::new();
+    let mut go_block = false;
+    for (idx, raw_line) in content.lines().enumerate() {
+        let line_no = idx as u32 + 1;
+        let line = raw_line.trim();
+        match lang {
+            Language::Rust => {
+                if let Some(module) = line
+                    .strip_prefix("use ")
+                    .and_then(|s| s.trim_end_matches(';').split_whitespace().next())
+                    .or_else(|| {
+                        line.strip_prefix("pub use ")
+                            .and_then(|s| s.trim_end_matches(';').split_whitespace().next())
+                    })
+                {
+                    imports.push(import_entry(module, line_no, base_dir, root, lang));
+                } else if let Some(module) = line
+                    .strip_prefix("mod ")
+                    .and_then(|s| s.trim_end_matches(';').split_whitespace().next())
+                {
+                    imports.push(import_entry(module, line_no, base_dir, root, lang));
+                }
+            }
+            Language::Python => {
+                if let Some(rest) = line.strip_prefix("import ") {
+                    for module in rest.split(',').filter_map(|s| s.split_whitespace().next()) {
+                        imports.push(import_entry(module, line_no, base_dir, root, lang));
+                    }
+                } else if let Some(rest) = line.strip_prefix("from ") {
+                    if let Some(module) = rest.split_whitespace().next() {
+                        imports.push(import_entry(module, line_no, base_dir, root, lang));
+                    }
+                }
+            }
+            Language::TypeScript | Language::Tsx => {
+                if let Some(module) = quoted_module(line) {
+                    if line.starts_with("import ")
+                        || line.starts_with("export ")
+                        || line.contains(" require(")
+                    {
+                        imports.push(import_entry(&module, line_no, base_dir, root, lang));
+                    }
+                }
+            }
+            Language::Go => {
+                if line == "import (" {
+                    go_block = true;
+                    continue;
+                }
+                if go_block && line == ")" {
+                    go_block = false;
+                    continue;
+                }
+                if let Some(module) = quoted_module(line.strip_prefix("import ").unwrap_or(line)) {
+                    if go_block || line.starts_with("import ") {
+                        imports.push(import_entry(&module, line_no, base_dir, root, lang));
+                    }
+                }
+            }
+            Language::C | Language::Cpp => {
+                if let Some(module) = line.strip_prefix("#include").and_then(quoted_module) {
+                    imports.push(import_entry(&module, line_no, base_dir, root, lang));
+                }
+            }
+        }
+    }
+    imports
+}
+
+fn quoted_module(line: &str) -> Option<String> {
+    let start = line.find(['"', '\''])?;
+    let quote = line.as_bytes()[start] as char;
+    let tail = &line[start + 1..];
+    let end = tail.find(quote)?;
+    Some(tail[..end].to_string())
+}
+
+fn import_entry(
+    module: &str,
+    line: u32,
+    base_dir: &Path,
+    root: &Path,
+    lang: Language,
+) -> ImportEntry {
+    ImportEntry {
+        module: module.to_string(),
+        resolved_path: resolve_import_path(module, base_dir, root, lang),
+        line,
+    }
+}
+
+fn resolve_import_path(
+    module: &str,
+    base_dir: &Path,
+    root: &Path,
+    lang: Language,
+) -> Option<String> {
+    let candidates: Vec<PathBuf> = match lang {
+        Language::TypeScript | Language::Tsx if module.starts_with('.') => {
+            ["ts", "tsx", "js", "jsx"]
+                .iter()
+                .flat_map(|ext| {
+                    [
+                        base_dir.join(format!("{module}.{ext}")),
+                        base_dir.join(module).join(format!("index.{ext}")),
+                    ]
+                })
+                .collect()
+        }
+        Language::Python if module.starts_with('.') => {
+            let trimmed = module.trim_start_matches('.').replace('.', "/");
+            vec![
+                base_dir.join(format!("{trimmed}.py")),
+                base_dir.join(&trimmed).join("__init__.py"),
+            ]
+        }
+        Language::Rust => {
+            let rel = module.split("::").next().unwrap_or(module);
+            vec![
+                base_dir.join(format!("{rel}.rs")),
+                base_dir.join(rel).join("mod.rs"),
+            ]
+        }
+        _ => Vec::new(),
+    };
+    candidates
+        .into_iter()
+        .find(|p| p.exists())
+        .and_then(|p| p.canonicalize().ok())
+        .and_then(|p| {
+            p.strip_prefix(root)
+                .ok()
+                .map(|r| r.to_string_lossy().to_string())
+        })
+}
+
+pub fn code_dependencies(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: CodeDependenciesParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let focus = params.path.clone();
+    let files = source_files(&daemon.root, params.max_files.unwrap_or(4096));
+    let mut all_edges = Vec::new();
+    for path in &files {
+        if let Ok(imports) = code_imports_inner(daemon, path) {
+            for import in imports.imports {
+                if let Some(to) = import.resolved_path.clone() {
+                    all_edges.push(DependencyEdge {
+                        from: path.clone(),
+                        to,
+                        module: import.module,
+                        line: import.line,
+                    });
+                }
+            }
+        }
+    }
+    let (dependencies, dependents) = if let Some(focus) = focus {
+        (
+            all_edges
+                .iter()
+                .filter(|e| e.from == focus)
+                .cloned()
+                .collect(),
+            all_edges.into_iter().filter(|e| e.to == focus).collect(),
+        )
+    } else {
+        (all_edges, Vec::new())
+    };
+    Ok(serde_json::to_value(CodeDependenciesResult {
+        files_scanned: files.len(),
+        dependencies,
+        dependents,
+    })
+    .unwrap())
+}
+
+pub fn code_find_occurrences(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: CodeFindOccurrencesParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    if params.identifier.is_empty() {
+        return Err(RpcError::new(-32602, "identifier must not be empty"));
+    }
+    let max = params.max_results.unwrap_or(200);
+    let files = match params.path {
+        Some(path) => vec![path],
+        None => source_files(&daemon.root, 4096),
+    };
+    let mut occurrences = Vec::new();
+    let mut truncated = false;
+    for rel in files {
+        let abs = resolve_within(&daemon.root, &rel)?;
+        let Some(parsed) = daemon
+            .parse_cache
+            .get_or_parse(&abs)
+            .map_err(|e| RpcError::new(-32041, format!("parse {}: {e}", abs.display())))?
+        else {
+            continue;
+        };
+        collect_identifier_occurrences(
+            parsed.tree.root_node(),
+            &parsed.source,
+            &rel,
+            &params.identifier,
+            max,
+            &mut occurrences,
+        );
+        if occurrences.len() >= max {
+            truncated = true;
+            break;
+        }
+    }
+    Ok(serde_json::to_value(CodeFindOccurrencesResult {
+        occurrences,
+        truncated,
+    })
+    .unwrap())
+}
+
+fn collect_identifier_occurrences(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    path: &str,
+    needle: &str,
+    max: usize,
+    out: &mut Vec<CodeOccurrence>,
+) {
+    if out.len() >= max {
+        return;
+    }
+    let kind = node.kind();
+    if matches!(
+        kind,
+        "identifier" | "field_identifier" | "type_identifier" | "property_identifier"
+    ) {
+        if node.utf8_text(source).ok() == Some(needle) {
+            let pos = node.start_position();
+            out.push(CodeOccurrence {
+                path: path.to_string(),
+                line: pos.row as u32 + 1,
+                column: pos.column as u32 + 1,
+                kind: kind.to_string(),
+            });
+        }
+        return;
+    }
+    if kind.contains("comment") || kind.contains("string") {
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_identifier_occurrences(child, source, path, needle, max, out);
+        if out.len() >= max {
+            break;
+        }
+    }
+}
+
+pub fn fs_read_skeleton(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: FsReadSkeletonParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let outline = code_outline_inner(
+        daemon,
+        &CodeOutlineParams {
+            path: params.path.clone(),
+            signatures_only: true,
+        },
+    )?;
+    let abs = resolve_within(&daemon.root, &params.path)?;
+    let content =
+        fs::read_to_string(&abs).map_err(|e| RpcError::new(-32080, format!("read: {e}")))?;
+    let mut lines: Vec<String> = content.lines().map(|l| format!("{l}\n")).collect();
+    if !content.ends_with('\n') {
+        if let Some(last) = lines.last_mut() {
+            last.pop();
+        }
+    }
+    let mut elided = Vec::new();
+    for entry in outline.entries.iter().rev() {
+        let keep = params.target_symbol.as_deref() == Some(entry.name.as_str())
+            || params
+                .target_line
+                .is_some_and(|line| line >= entry.start_line && line <= entry.end_line);
+        if keep || entry.end_line <= entry.start_line + 2 {
+            continue;
+        }
+        let start = entry.start_line as usize;
+        let end = entry.end_line as usize;
+        if start >= end || end > lines.len() {
+            continue;
+        }
+        let removed = end - start;
+        lines.splice(
+            start..end,
+            [format!(
+                "// ... {removed} lines elided from {} ...\n",
+                entry.name
+            )],
+        );
+        elided.push(SkeletonElidedRegion {
+            symbol: entry.name.clone(),
+            start_line: entry.start_line + 1,
+            end_line: entry.end_line,
+            lines: removed as u32,
+        });
+    }
+    elided.reverse();
+    Ok(serde_json::to_value(FsReadSkeletonResult {
+        path: params.path,
+        language: outline.language,
+        content: lines.concat(),
+        elided_regions: elided,
+    })
+    .unwrap())
+}
+
+fn source_files(root: &Path, max: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in WalkBuilder::new(root)
+        .standard_filters(true)
+        .hidden(true)
+        .build()
+    {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        if Language::detect(path).is_none() {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+        out.push(rel);
+        if out.len() >= max {
+            break;
+        }
+    }
+    out
+}
+
 pub fn tool_run(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
     let params: ToolRunParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
@@ -1309,6 +1700,7 @@ mod tests {
     }
 
     fn test_daemon(root: &std::path::Path) -> Daemon {
+        let parse_cache = std::sync::Arc::new(crate::parse_cache::ParseCache::new(10));
         Daemon {
             root: root.canonicalize().unwrap(),
             changelog: std::sync::Arc::new(crate::changelog::ChangeLog::with_capacity(10)),
@@ -1316,7 +1708,14 @@ mod tests {
             tool_run_cache: std::sync::Arc::new(parking_lot::Mutex::new(
                 std::collections::HashMap::new(),
             )),
-            backends: crate::backends::BackendRegistry::new(),
+            parse_cache: parse_cache.clone(),
+            backends: {
+                let mut reg = crate::backends::BackendRegistry::new();
+                reg.register(std::sync::Arc::new(
+                    crate::backends::TreeSitterBackend::new(parse_cache),
+                ));
+                reg
+            },
             frame_pool: std::sync::Arc::new(crate::buffer_pool::BufferPool::new(1, 1024)),
             metrics: std::sync::Arc::new(crate::metrics::ToolMetrics::new()),
         }
@@ -1563,5 +1962,96 @@ mod tests {
             fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
             "one\ntwo\nthree\n"
         );
+    }
+
+    #[test]
+    fn test_code_imports_resolves_relative_typescript_import() {
+        let tmp = tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::write(
+            tmp.path().join("src/auth.ts"),
+            "export function login() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("src/app.ts"),
+            "import { login } from './auth';\nlogin();\n",
+        )
+        .unwrap();
+        let daemon = test_daemon(tmp.path());
+
+        let result = code_imports(&daemon, serde_json::json!({"path": "src/app.ts"})).unwrap();
+        let imports: CodeImportsResult = serde_json::from_value(result).unwrap();
+
+        assert_eq!(imports.imports.len(), 1);
+        assert_eq!(imports.imports[0].module, "./auth");
+        assert_eq!(
+            imports.imports[0].resolved_path.as_deref(),
+            Some("src/auth.ts")
+        );
+    }
+
+    #[test]
+    fn test_code_dependencies_reports_reverse_dependents() {
+        let tmp = tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::write(tmp.path().join("src/auth.ts"), "export const token = 1;\n").unwrap();
+        fs::write(
+            tmp.path().join("src/app.ts"),
+            "import { token } from './auth';\nconsole.log(token);\n",
+        )
+        .unwrap();
+        let daemon = test_daemon(tmp.path());
+
+        let result =
+            code_dependencies(&daemon, serde_json::json!({"path": "src/auth.ts"})).unwrap();
+        let deps: CodeDependenciesResult = serde_json::from_value(result).unwrap();
+
+        assert!(deps.dependencies.is_empty());
+        assert_eq!(deps.dependents.len(), 1);
+        assert_eq!(deps.dependents[0].from, "src/app.ts");
+    }
+
+    #[test]
+    fn test_code_find_occurrences_ignores_strings_and_comments() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("a.rs"),
+            "fn main() {\n let target = 1;\n println!(\"target\");\n // target\n target;\n}\n",
+        )
+        .unwrap();
+        let daemon = test_daemon(tmp.path());
+
+        let result = code_find_occurrences(
+            &daemon,
+            serde_json::json!({"path": "a.rs", "identifier": "target"}),
+        )
+        .unwrap();
+        let found: CodeFindOccurrencesResult = serde_json::from_value(result).unwrap();
+
+        let lines: Vec<u32> = found.occurrences.iter().map(|o| o.line).collect();
+        assert_eq!(lines, vec![2, 5]);
+    }
+
+    #[test]
+    fn test_fs_read_skeleton_elides_non_target_bodies() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("a.rs"),
+            "fn keep() {\n let a = 1;\n let b = 2;\n}\n\nfn fold() {\n let c = 3;\n let d = 4;\n}\n",
+        )
+        .unwrap();
+        let daemon = test_daemon(tmp.path());
+
+        let result = fs_read_skeleton(
+            &daemon,
+            serde_json::json!({"path": "a.rs", "target_symbol": "keep"}),
+        )
+        .unwrap();
+        let skeleton: FsReadSkeletonResult = serde_json::from_value(result).unwrap();
+
+        assert!(skeleton.content.contains("let a = 1"));
+        assert!(skeleton.content.contains("lines elided from fold"));
+        assert!(!skeleton.content.contains("let c = 3"));
     }
 }

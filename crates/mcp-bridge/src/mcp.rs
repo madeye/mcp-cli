@@ -125,6 +125,10 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
         "code_outline_batch" => protocol::methods::CODE_OUTLINE_BATCH,
         "code_symbols" => protocol::methods::CODE_SYMBOLS,
         "code_symbols_batch" => protocol::methods::CODE_SYMBOLS_BATCH,
+        "code_imports" => protocol::methods::CODE_IMPORTS,
+        "code_dependencies" => protocol::methods::CODE_DEPENDENCIES,
+        "code_find_occurrences" => protocol::methods::CODE_FIND_OCCURRENCES,
+        "fs_read_skeleton" => protocol::methods::FS_READ_SKELETON,
         "tool_run" => protocol::methods::TOOL_RUN,
         "tool_gh" => protocol::methods::TOOL_GH,
         "metrics_gain" => protocol::methods::METRICS_GAIN,
@@ -354,6 +358,52 @@ fn tool_definitions() -> Value {
                     }
                 },
                 "required": ["requests"]
+            }
+        },
+        {
+            "name": "code_imports",
+            "description": "Extract import/use/include statements from one source file and resolve local relative imports when possible.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Source file relative to project root."}},
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "code_dependencies",
+            "description": "Build a lightweight dependency edge list from source imports. With `path`, returns that file's dependencies and reverse dependents.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Optional focus file relative to project root."},
+                    "max_files": {"type": "integer", "minimum": 1, "default": 4096}
+                }
+            }
+        },
+        {
+            "name": "code_find_occurrences",
+            "description": "Smart grep for an identifier using tree-sitter nodes, ignoring comments and string literals.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "identifier": {"type": "string"},
+                    "path": {"type": "string", "description": "Optional file to search; defaults to supported source files."},
+                    "max_results": {"type": "integer", "minimum": 1, "default": 200}
+                },
+                "required": ["identifier"]
+            }
+        },
+        {
+            "name": "fs_read_skeleton",
+            "description": "Read a source file with non-target declaration bodies folded to elision markers while preserving surrounding structure. Use `target_symbol` or `target_line` to keep one body expanded.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "target_line": {"type": "integer", "minimum": 1},
+                    "target_symbol": {"type": "string"}
+                },
+                "required": ["path"]
             }
         },
         {
