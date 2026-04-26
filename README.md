@@ -21,6 +21,14 @@ Significant wins across both major agents measured on 2026-04-21 (analysis of `o
 
 **Warm-cache bonus:** Re-running tasks on a resident daemon saves an additional **650k–950k tokens** per pass via tree-sitter parse and grep result caching.
 
+There is now a matching Claude Code twin benchmark under
+[`bench/claudecode-forkexec/`](./bench/claudecode-forkexec/): same
+target workload, but three passes (`baseline`, `cold mcp-cli`, `warm
+mcp-cli`) so the daemon's cross-session cache payoff is visible too.
+The Codex run above is still the headline result in the README; the
+Claude Code twin broadens the measurement surface beyond a single
+agent and is the next place to fold into the top-level story.
+
 ## Architecture
 
 ```

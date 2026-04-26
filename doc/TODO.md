@@ -47,6 +47,7 @@ Concrete, actionable items. Group headers track milestones in
 * [x] `parse_trace.py` and `compare.py` for results.
 * [x] `metrics.tool_latency` RPC for daemon-side instrumentation.
 * [x] README headline updates with −44% (Codex) and −82% (Claude) wins.
+* [x] Claude Code twin under `bench/claudecode-forkexec/`: three-pass `baseline` / `cold mcp-cli` / `warm mcp-cli` shape.
 
 ## Lifecycle & Contention (M6) — Done
 
