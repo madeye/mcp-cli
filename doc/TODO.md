@@ -81,8 +81,8 @@ Concrete, actionable items. Group headers track milestones in
 * [x] `code.find_occurrences` (Smart Grep).
 * [x] `fs.read_skeleton` (Dynamic folding).
 
-## Deep Git & Process Management (M10) — Pending
+## Deep Git & Process Management (M10) — Done
 
-* [ ] `git.blame` (Compact) RPC.
-* [ ] `git.history` (File-specific) RPC.
-* [ ] `tool.spawn` / `tool.read_logs` / `tool.kill` (Background jobs).
+* [x] `git.blame` (Compact) RPC.
+* [x] `git.history` (File-specific) RPC.
+* [x] `tool.spawn` / `tool.read_logs` / `tool.kill` (Background jobs).

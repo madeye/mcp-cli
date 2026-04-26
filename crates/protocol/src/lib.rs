@@ -48,6 +48,8 @@ pub mod methods {
     pub const GIT_STATUS: &str = "git.status";
     pub const GIT_LOG: &str = "git.log";
     pub const GIT_DIFF: &str = "git.diff";
+    pub const GIT_BLAME: &str = "git.blame";
+    pub const GIT_HISTORY: &str = "git.history";
     pub const SEARCH_GREP: &str = "search.grep";
     pub const CODE_OUTLINE: &str = "code.outline";
     pub const CODE_OUTLINE_BATCH: &str = "code.outline_batch";
@@ -59,6 +61,9 @@ pub mod methods {
     pub const FS_READ_SKELETON: &str = "fs.read_skeleton";
     pub const TOOL_RUN: &str = "tool.run";
     pub const TOOL_GH: &str = "tool.gh";
+    pub const TOOL_SPAWN: &str = "tool.spawn";
+    pub const TOOL_READ_LOGS: &str = "tool.read_logs";
+    pub const TOOL_KILL: &str = "tool.kill";
     pub const METRICS_GAIN: &str = "metrics.gain";
     pub const METRICS_TOOL_LATENCY: &str = "metrics.tool_latency";
 }
@@ -303,6 +308,44 @@ pub struct GitDiffParams {
 pub struct GitDiffResult {
     /// Unified diff format.
     pub diff: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GitBlameParams {
+    #[serde(default)]
+    pub repo: Option<String>,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitBlameResult {
+    pub path: String,
+    pub spans: Vec<GitBlameSpan>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitBlameSpan {
+    pub start_line: u32,
+    pub end_line: u32,
+    pub lines: u32,
+    pub sha: String,
+    pub author: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GitHistoryParams {
+    #[serde(default)]
+    pub repo: Option<String>,
+    pub path: String,
+    #[serde(default)]
+    pub max_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHistoryResult {
+    pub path: String,
+    pub commits: Vec<GitCommit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -799,4 +842,56 @@ pub struct ToolGhResult {
     pub stdout: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub stderr: String,
+}
+
+// ---- background jobs -----------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolSpawnParams {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub env: Vec<ToolRunEnv>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolSpawnResult {
+    pub job_id: u64,
+    pub pid: Option<u32>,
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolReadLogsParams {
+    pub job_id: u64,
+    #[serde(default)]
+    pub offset: usize,
+    #[serde(default)]
+    pub max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolReadLogsResult {
+    pub job_id: u64,
+    pub output: String,
+    pub next_offset: usize,
+    pub exit_code: Option<i32>,
+    pub running: bool,
+    pub killed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolKillParams {
+    pub job_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolKillResult {
+    pub job_id: u64,
+    pub killed: bool,
+    pub exit_code: Option<i32>,
 }

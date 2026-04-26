@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::process::Child;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -44,6 +45,19 @@ pub struct Daemon {
     pub backends: BackendRegistry,
     pub frame_pool: Arc<BufferPool>,
     pub metrics: Arc<ToolMetrics>,
+    pub jobs: Arc<JobTable>,
+}
+
+pub struct JobTable {
+    pub next_id: AtomicU64,
+    pub jobs: Mutex<HashMap<u64, BackgroundJob>>,
+}
+
+pub struct BackgroundJob {
+    pub child: Child,
+    pub output: Arc<Mutex<String>>,
+    pub killed: bool,
+    pub exit_code: Option<i32>,
 }
 
 pub struct Config {
@@ -86,6 +100,10 @@ pub async fn serve(cfg: Config) -> Result<()> {
     // beyond FRAME_BUFFER_RECYCLE_CAP are dropped on return.
     let frame_pool = Arc::new(BufferPool::new(32, FRAME_BUFFER_RECYCLE_CAP));
     let metrics = Arc::new(ToolMetrics::new());
+    let jobs = Arc::new(JobTable {
+        next_id: AtomicU64::new(1),
+        jobs: Mutex::new(HashMap::new()),
+    });
     let daemon = Arc::new(Daemon {
         root: cfg.root,
         changelog,
@@ -95,6 +113,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
         backends,
         frame_pool,
         metrics,
+        jobs,
     });
 
     let idle = Arc::new(IdleTracker::new(cfg.idle_timeout));
@@ -285,6 +304,8 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
         protocol::methods::GIT_STATUS => handlers::git_status(daemon, req.params),
         protocol::methods::GIT_LOG => handlers::git_log(daemon, req.params),
         protocol::methods::GIT_DIFF => handlers::git_diff(daemon, req.params),
+        protocol::methods::GIT_BLAME => handlers::git_blame(daemon, req.params),
+        protocol::methods::GIT_HISTORY => handlers::git_history(daemon, req.params),
         protocol::methods::SEARCH_GREP => handlers::search_grep(daemon, req.params),
         protocol::methods::CODE_OUTLINE => handlers::code_outline(daemon, req.params),
         protocol::methods::CODE_OUTLINE_BATCH => handlers::code_outline_batch(daemon, req.params),
@@ -298,6 +319,9 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
         protocol::methods::FS_READ_SKELETON => handlers::fs_read_skeleton(daemon, req.params),
         protocol::methods::TOOL_RUN => handlers::tool_run(daemon, req.params),
         protocol::methods::TOOL_GH => handlers::tool_gh(daemon, req.params),
+        protocol::methods::TOOL_SPAWN => handlers::tool_spawn(daemon, req.params),
+        protocol::methods::TOOL_READ_LOGS => handlers::tool_read_logs(daemon, req.params),
+        protocol::methods::TOOL_KILL => handlers::tool_kill(daemon, req.params),
         protocol::methods::METRICS_GAIN => handlers::metrics_gain(daemon, req.params),
         protocol::methods::METRICS_TOOL_LATENCY => {
             handlers::metrics_tool_latency(daemon, req.params)
