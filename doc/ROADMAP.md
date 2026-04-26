@@ -232,6 +232,30 @@ Expanding the capabilities of `libgit2` and expanding `tool.run` to handle async
   terminate it (`tool.kill`) without blocking on watch tasks or dev
   servers.
 
+## M11 - Hardening, docs, and release polish (pending)
+
+The core milestones are closed. This milestone turns the broad feature
+surface into something easier to maintain, validate, and release.
+
+* [ ] **Bridge-level integration coverage.** Add end-to-end MCP bridge
+  tests for `fs.apply_patch`, `code.dependencies`, `git.blame`, and
+  background jobs so the JSON-RPC/MCP schemas are covered, not just the
+  daemon handlers.
+* [ ] **Real Linux I/O backend.** Replace the current `--io-uring` mode
+  gate with actual Linux `io_uring` reads/walks and a true raw-byte
+  side channel for large `fs.read` responses.
+* [ ] **Background job retention.** Add cleanup/retention limits for
+  finished daemon-managed jobs so long daemon sessions cannot accumulate
+  unbounded job records and captured logs.
+* [ ] **Protocol documentation refresh.** Update `doc/PROTOCOL.md` for
+  every RPC added in M7-M10, including request/response examples and
+  error behavior.
+* [ ] **Benchmark refresh.** Re-run the Codex and Claude Code M5
+  benchmarks after batching, compaction, write, structural, git, and
+  process additions; update headline numbers and result notes.
+* [ ] **Release hygiene.** Add changelog/release notes and tag a
+  versioned release once documentation and benchmark updates land.
+
 ## Integration strategy
 
 * **Plan.** Implement an MCP-compatible server; the agent (Claude Code,
