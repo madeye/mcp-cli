@@ -116,6 +116,8 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
         "fs_changes" => protocol::methods::FS_CHANGES,
         "fs_scan" => protocol::methods::FS_SCAN,
         "git_status" => protocol::methods::GIT_STATUS,
+        "git_log" => protocol::methods::GIT_LOG,
+        "git_diff" => protocol::methods::GIT_DIFF,
         "search_grep" => protocol::methods::SEARCH_GREP,
         "code_outline" => protocol::methods::CODE_OUTLINE,
         "code_outline_batch" => protocol::methods::CODE_OUTLINE_BATCH,
@@ -210,6 +212,32 @@ fn tool_definitions() -> Value {
                 "properties": {
                     "repo": {"type": "string", "description": "Optional repo path relative to project root."},
                     "compact": {"type": "boolean", "default": false, "description": "Return a class+directory roll-up instead of the full per-file list."}
+                }
+            }
+        },
+        {
+            "name": "git_log",
+            "description": "Return a compact one-liner git log (SHA, author, date, summary). Default 50 commits from HEAD. Supports revision and path filtering.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "Optional repo path relative to project root."},
+                    "max_count": {"type": "integer", "minimum": 1, "default": 50},
+                    "revision": {"type": "string", "description": "Optional revision to start from (branch, tag, or SHA)."},
+                    "path": {"type": "string", "description": "Optional path to filter commits."}
+                }
+            }
+        },
+        {
+            "name": "git_diff",
+            "description": "Return a unified diff between two revisions or between a revision and the working tree.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "Optional repo path relative to project root."},
+                    "base": {"type": "string", "description": "Base revision (default: HEAD)."},
+                    "target": {"type": "string", "description": "Target revision (if omitted, compares base against working tree)."},
+                    "path": {"type": "string", "description": "Optional path filter."}
                 }
             }
         },

@@ -275,6 +275,8 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
         protocol::methods::FS_CHANGES => handlers::fs_changes(daemon, req.params),
         protocol::methods::FS_SCAN => handlers::fs_scan(daemon, req.params),
         protocol::methods::GIT_STATUS => handlers::git_status(daemon, req.params),
+        protocol::methods::GIT_LOG => handlers::git_log(daemon, req.params),
+        protocol::methods::GIT_DIFF => handlers::git_diff(daemon, req.params),
         protocol::methods::SEARCH_GREP => handlers::search_grep(daemon, req.params),
         protocol::methods::CODE_OUTLINE => handlers::code_outline(daemon, req.params),
         protocol::methods::CODE_OUTLINE_BATCH => handlers::code_outline_batch(daemon, req.params),

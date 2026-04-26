@@ -44,6 +44,8 @@ pub mod methods {
     pub const FS_CHANGES: &str = "fs.changes";
     pub const FS_SCAN: &str = "fs.scan";
     pub const GIT_STATUS: &str = "git.status";
+    pub const GIT_LOG: &str = "git.log";
+    pub const GIT_DIFF: &str = "git.diff";
     pub const SEARCH_GREP: &str = "search.grep";
     pub const CODE_OUTLINE: &str = "code.outline";
     pub const CODE_OUTLINE_BATCH: &str = "code.outline_batch";
@@ -189,6 +191,54 @@ pub struct GitStatusClassBucket {
 pub struct GitStatusDirCount {
     pub dir: String,
     pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GitLogParams {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub max_count: Option<usize>,
+    /// Optional branch, tag, or commit SHA to start from. Defaults to HEAD.
+    #[serde(default)]
+    pub revision: Option<String>,
+    /// Optional path to filter commits by.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitLogResult {
+    pub commits: Vec<GitCommit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitCommit {
+    pub sha: String,
+    pub author: String,
+    pub date: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GitDiffParams {
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// Base revision to compare from.
+    #[serde(default)]
+    pub base: Option<String>,
+    /// Target revision to compare to. If omitted, compares base against working tree.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Optional path filter.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitDiffResult {
+    /// Unified diff format.
+    pub diff: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

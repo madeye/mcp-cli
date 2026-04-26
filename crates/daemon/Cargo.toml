@@ -34,6 +34,7 @@ tree-sitter-cpp.workspace = true
 tree-sitter-typescript.workspace = true
 tree-sitter-go.workspace = true
 humantime.workspace = true
+chrono.workspace = true
 mimalloc = { workspace = true, optional = true }
 
 [features]

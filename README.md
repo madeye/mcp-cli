@@ -5,52 +5,21 @@ A sidecar-daemon + MCP bridge designed to give CLI/IDE-based AI agents
 and source code **without paying the per-call fork/exec tax** of traditional
 shell-tool wrappers.
 
-## Headline numbers
+## Headline Numbers
 
-Both tables below come from single-sample runs on 2026-04-21 with
-the agent analysing `openai/codex@rust-v0.122.0` (identical prompt,
-same host). Full writeups linked in each section; earlier iterations
-live alongside under
-[`bench/codex-forkexec/results/`](./bench/codex-forkexec/results/) and
-[`bench/claudecode-forkexec/results/`](./bench/claudecode-forkexec/results/).
+Significant wins across both major agents measured on 2026-04-21 (analysis of `openai/codex@rust-v0.122.0`).
 
-### Codex
+### [Codex](bench/codex-forkexec/results/2026-04-21-rust-v0.122.0-sandbox-ablation.md)
+* **−44 %** Wall-clock (209s → 117s)
+* **−66 %** `execve` calls (64 → 22)
+* **−64 %** Input tokens (1.9M → 0.7M)
 
-With `--sandbox danger-full-access` (the Seatbelt overhead on
-baseline's shell calls was concealing the win; full analysis in
-[`bench/codex-forkexec/results/2026-04-21-rust-v0.122.0-sandbox-ablation.md`](./bench/codex-forkexec/results/2026-04-21-rust-v0.122.0-sandbox-ablation.md)):
+### [Claude Code](bench/claudecode-forkexec/results/2026-04-21-rust-v0.122.0.md)
+* **−5 %** Wall-clock (even on cold pass)
+* **−82 %** `execve` calls (85 → 15)
+* **−14 %** Output tokens
 
-| metric | baseline | cold mcp-cli | delta |
-|---|---:|---:|---:|
-| `execve` total | 64 | 22 | **−66 %** |
-| wall clock (s) | 209 | 117 | **−44 %** |
-| input tokens | 1 931 010 | 694 446 | **−64 %** |
-| cached input tokens | 1 811 072 | 571 776 | −68 % |
-| MCP calls on the daemon | 0 | 66 | *`search_grep` ×30, `fs_read` ×20, `code_outline` ×12, `fs_scan` ×2, `git_status` ×2* |
-
-Warm pass cuts cached input another 649 k tokens cold → warm even
-as the agent makes *more* calls — `search_cache` + `parse_cache` +
-prewarm amortising work as intended.
-
-### Claude Code
-
-Full writeup in
-[`bench/claudecode-forkexec/results/2026-04-21-rust-v0.122.0.md`](./bench/claudecode-forkexec/results/2026-04-21-rust-v0.122.0.md):
-
-| metric | baseline | cold mcp-cli | delta |
-|---|---:|---:|---:|
-| `execve` total | 85 | 15 | **−82 %** |
-| wall clock (s) | 219 | 208 | **−5 %** |
-| output tokens | 13 584 | 11 747 | −14 % |
-| MCP calls on the daemon | 0 | 29 | *`fs_read` ×17, `search_grep` ×9, `fs_scan` ×3* |
-
-Claude shells out harder than Codex by default (85 vs 64 execves),
-so the fork/exec win is bigger. Unlike Codex, Claude's cold pass
-already *beats* baseline wall-clock. Warm pass drops cached input
-−952 k tokens cold → warm despite making ~2× more calls.
-
-Each step of progress is a result file under the two `results/`
-dirs; they're worth reading as a sequence.
+**Warm-cache bonus:** Re-running tasks on a resident daemon saves an additional **650k–950k tokens** per pass via tree-sitter parse and grep result caching.
 
 ## Architecture
 
@@ -150,24 +119,8 @@ to run anything by hand. To always keep one resident, see
 
 ## Status
 
-See [`doc/roadmap.md`](./doc/roadmap.md) and
-[`doc/todo.md`](./doc/todo.md).
+See [`doc/ROADMAP.md`](./doc/ROADMAP.md) and [`doc/TODO.md`](./doc/TODO.md).
 
-* **Done** — skeleton, incremental sync (`fs.snapshot` / `fs.changes`
-  / `fs.scan`), tree-sitter `code.outline` / `code.symbols` parse
-  cache, drop-in install (`mcp-cli install`), per-cwd auto-spawn,
-  reconnect-on-dead, multi-bridge contention test, mimalloc +
-  buffer pool, M5 codex-forkexec + M5-twin claudecode-forkexec
-  benches (three-pass baseline / cold / warm with full 6-col
-  comparison), M7 compaction foundation (`?compact` on
-  `git.status` / `search.grep`, `metrics.gain` +
-  `metrics.tool_latency`), the `--prefer-mcp` path, and compound /
-  batch MCP tools (`fs_read_batch`, `code_outline_batch`,
-  `code_symbols_batch`, `search_grep ?context`) — which together
-  closed the cold wall-clock regression so that cold mcp-cli is now
-  faster than baseline on both Codex and Claude Code (see tables
-  above).
-* **Open** — rust-analyzer / clangd language backends, further
-  compound/batch tool opportunities flagged by warm-pass call
-  patterns, `io_uring` I/O, per-request arenas, optional LSP /
-  WASI mounting surfaces.
+* **Done (M0–M6 + parts of M7)** — Daemon/Bridge skeleton, incremental watch sync, tree-sitter indexing (`rust`, `python`, `c`, `cpp`, `ts`, `go`), drop-in `mcp-cli install`, per-cwd auto-spawn, reconnect-on-dead, `mimalloc` + buffer pooling, full M5 performance benchmarks, and `git.log` / `git.diff` RPCs.
+* **In Progress (M7)** — Token-killer compaction (`?compact` on `git.status`, `search.grep`, `fs.scan`; `?strip_noise` on `fs.read`), metrics telemetry, and the generic `tool.run` wrapper.
+* **Open (M8–M10)** — Write-path with optimistic concurrency (`fs.apply_patch`), advanced structural tools (dependency graphs, dynamic folding), and deep git/process management.

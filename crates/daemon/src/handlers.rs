@@ -9,9 +9,9 @@ use protocol::{
     CodeOutlineResult, CodeSymbolsBatchItem, CodeSymbolsBatchParams, CodeSymbolsBatchResult,
     CodeSymbolsParams, CodeSymbolsResult, FsChangesParams, FsChangesResult, FsReadBatchItem,
     FsReadBatchParams, FsReadBatchResult, FsReadParams, FsReadResult, FsScanParams, FsScanResult,
-    FsSnapshotResult, GitStatusEntry, GitStatusParams, GitStatusResult, MetricsGainParams,
-    MetricsToolLatencyParams, RpcError, SearchContextLine, SearchGrepParams, SearchGrepResult,
-    SearchHit,
+    FsSnapshotResult, GitCommit, GitDiffParams, GitDiffResult, GitLogParams, GitLogResult,
+    GitStatusEntry, GitStatusParams, GitStatusResult, MetricsGainParams, MetricsToolLatencyParams,
+    RpcError, SearchContextLine, SearchGrepParams, SearchGrepResult, SearchHit,
 };
 
 use crate::compact;
@@ -285,6 +285,177 @@ pub fn git_status(
     daemon
         .metrics
         .record(protocol::methods::GIT_STATUS, raw_bytes, compacted_bytes);
+    Ok(value)
+}
+
+pub fn git_log(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: GitLogParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let repo_root = match params.repo {
+        Some(r) => resolve_within(&daemon.root, &r)?,
+        None => daemon.root.clone(),
+    };
+
+    let repo = git2::Repository::discover(&repo_root)
+        .map_err(|e| RpcError::new(-32020, format!("discover repo: {e}")))?;
+
+    let mut revwalk = repo
+        .revwalk()
+        .map_err(|e| RpcError::new(-32040, format!("revwalk: {e}")))?;
+
+    if let Some(rev) = &params.revision {
+        let obj = repo
+            .revparse_single(rev)
+            .map_err(|e| RpcError::new(-32041, format!("revparse {rev}: {e}")))?;
+        revwalk
+            .push(obj.id())
+            .map_err(|e| RpcError::new(-32042, format!("push rev: {e}")))?;
+    } else {
+        revwalk
+            .push_head()
+            .map_err(|e| RpcError::new(-32043, format!("push head: {e}")))?;
+    }
+
+    if let Some(path) = &params.path {
+        // revwalk doesn't support path filtering directly in libgit2 easily without
+        // manually checking blobs, but we can set the sorting and manually filter.
+        // For now, simpler to just let it walk and filter if max_count is small.
+        // Actually, libgit2 has simplified path filtering if we use a different approach
+        // but for a "compact one-liner" log, we'll just do the walk.
+        tracing::debug!(path = %path, "path filtering in git.log is not yet optimized");
+    }
+
+    let mut commits = Vec::new();
+    let max = params.max_count.unwrap_or(50);
+
+    for id in revwalk {
+        let id = id.map_err(|e| RpcError::new(-32044, format!("walk: {e}")))?;
+        let commit = repo
+            .find_commit(id)
+            .map_err(|e| RpcError::new(-32045, format!("find commit: {e}")))?;
+
+        // If path filtering is requested, we need to check if this commit touched the path.
+        if let Some(path) = &params.path {
+            let mut touched = false;
+            if commit.parent_count() > 0 {
+                let parent = commit.parent(0).unwrap();
+                let tree = commit.tree().unwrap();
+                let parent_tree = parent.tree().unwrap();
+                let diff = repo
+                    .diff_tree_to_tree(Some(&parent_tree), Some(&tree), None)
+                    .unwrap();
+                for delta in diff.deltas() {
+                    if delta.new_file().path().map_or(false, |p| p.to_string_lossy() == *path) ||
+                       delta.old_file().path().map_or(false, |p| p.to_string_lossy() == *path) {
+                        touched = true;
+                        break;
+                    }
+                }
+            } else {
+                // First commit
+                touched = true; 
+            }
+            if !touched {
+                continue;
+            }
+        }
+
+        let author = commit.author();
+        let author_name = author.name().unwrap_or("unknown").to_string();
+        let time = commit.time();
+        let date = chrono::DateTime::from_timestamp(time.seconds(), 0)
+            .map(|d| d.to_rfc3339())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        commits.push(GitCommit {
+            sha: id.to_string(),
+            author: author_name,
+            date,
+            message: commit.summary().unwrap_or("").to_string(),
+        });
+
+        if commits.len() >= max {
+            break;
+        }
+    }
+
+    let result = GitLogResult { commits };
+    let raw_bytes = serialized_size(&result);
+    let value = serde_json::to_value(&result).unwrap();
+    // For git.log we don't have a separate compact mode yet, 
+    // it's already compact (summaries only).
+    daemon.metrics.record(protocol::methods::GIT_LOG, raw_bytes, raw_bytes);
+    Ok(value)
+}
+
+pub fn git_diff(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: GitDiffParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let repo_root = match params.repo {
+        Some(r) => resolve_within(&daemon.root, &r)?,
+        None => daemon.root.clone(),
+    };
+
+    let repo = git2::Repository::discover(&repo_root)
+        .map_err(|e| RpcError::new(-32020, format!("discover repo: {e}")))?;
+
+    let mut opts = git2::DiffOptions::new();
+    if let Some(path) = &params.path {
+        opts.pathspec(path);
+    }
+
+    let diff = if let Some(target_rev) = &params.target {
+        // Diff between two revisions
+        let base_rev = params.base.as_deref().unwrap_or("HEAD");
+        let base_obj = repo
+            .revparse_single(base_rev)
+            .map_err(|e| RpcError::new(-32041, format!("revparse {base_rev}: {e}")))?
+            .peel_to_tree()
+            .map_err(|e| RpcError::new(-32046, format!("peel to tree: {e}")))?;
+        let target_obj = repo
+            .revparse_single(target_rev)
+            .map_err(|e| RpcError::new(-32041, format!("revparse {target_rev}: {e}")))?
+            .peel_to_tree()
+            .map_err(|e| RpcError::new(-32046, format!("peel to tree: {e}")))?;
+        
+        repo.diff_tree_to_tree(Some(&base_obj), Some(&target_obj), Some(&mut opts))
+            .map_err(|e| RpcError::new(-32047, format!("diff: {e}")))?
+    } else {
+        // Diff base against working tree
+        let base_rev = params.base.as_deref().unwrap_or("HEAD");
+        let base_obj = repo
+            .revparse_single(base_rev)
+            .map_err(|e| RpcError::new(-32041, format!("revparse {base_rev}: {e}")))?
+            .peel_to_tree()
+            .map_err(|e| RpcError::new(-32046, format!("peel to tree: {e}")))?;
+        
+        repo.diff_tree_to_workdir_with_index(Some(&base_obj), Some(&mut opts))
+            .map_err(|e| RpcError::new(-32047, format!("diff: {e}")))?
+    };
+
+    let mut diff_str = String::new();
+    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        let origin = line.origin();
+        match origin {
+            '+' | '-' | ' ' => diff_str.push(origin),
+            _ => {}
+        }
+        diff_str.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+        true
+    })
+    .map_err(|e| RpcError::new(-32048, format!("print diff: {e}")))?;
+
+    let result = GitDiffResult { diff: diff_str };
+    let raw_bytes = serialized_size(&result);
+    let value = serde_json::to_value(&result).unwrap();
+    // For now git.diff is just raw patch, future M7 work could condense it.
+    daemon.metrics.record(protocol::methods::GIT_DIFF, raw_bytes, raw_bytes);
     Ok(value)
 }
 
@@ -687,5 +858,140 @@ impl Sink for ContextSink<'_> {
             }
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use std::fs;
+    use git2::{Repository, Signature};
+
+    fn create_test_repo(path: &std::path::Path) -> Repository {
+        let repo = Repository::init(path).unwrap();
+        let sig = Signature::now("Test User", "test@example.com").unwrap();
+
+        {
+            let mut index = repo.index().unwrap();
+            // Commit 1
+            fs::write(path.join("file1.txt"), "hello").unwrap();
+            index.add_path(std::path::Path::new("file1.txt")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "First commit", &tree, &[]).unwrap();
+        }
+
+        {
+            let mut index = repo.index().unwrap();
+            // Commit 2
+            fs::write(path.join("file2.txt"), "world").unwrap();
+            index.add_path(std::path::Path::new("file2.txt")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let parent = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "Second commit", &tree, &[&parent]).unwrap();
+        }
+
+        repo
+    }
+
+    #[test]
+    fn test_git_log_basic() {
+        let tmp = tempdir().unwrap();
+        let repo_path = tmp.path();
+        let _repo = create_test_repo(repo_path);
+
+        let daemon = Daemon {
+            root: repo_path.to_path_buf(),
+            changelog: std::sync::Arc::new(crate::changelog::ChangeLog::with_capacity(10)),
+            search_cache: std::sync::Arc::new(crate::search_cache::SearchCache::new(10)),
+            backends: crate::backends::BackendRegistry::new(),
+            frame_pool: std::sync::Arc::new(crate::buffer_pool::BufferPool::new(1, 1024)),
+            metrics: std::sync::Arc::new(crate::metrics::ToolMetrics::new()),
+        };
+
+        let params = serde_json::json!({});
+        let result = git_log(&daemon, params).unwrap();
+        let log: GitLogResult = serde_json::from_value(result).unwrap();
+
+        assert_eq!(log.commits.len(), 2);
+        assert_eq!(log.commits[0].message, "Second commit");
+        assert_eq!(log.commits[1].message, "First commit");
+        assert_eq!(log.commits[0].author, "Test User");
+    }
+
+    #[test]
+    fn test_git_log_max_count() {
+        let tmp = tempdir().unwrap();
+        let repo_path = tmp.path();
+        let _repo = create_test_repo(repo_path);
+
+        let daemon = Daemon {
+            root: repo_path.to_path_buf(),
+            changelog: std::sync::Arc::new(crate::changelog::ChangeLog::with_capacity(10)),
+            search_cache: std::sync::Arc::new(crate::search_cache::SearchCache::new(10)),
+            backends: crate::backends::BackendRegistry::new(),
+            frame_pool: std::sync::Arc::new(crate::buffer_pool::BufferPool::new(1, 1024)),
+            metrics: std::sync::Arc::new(crate::metrics::ToolMetrics::new()),
+        };
+
+        let params = serde_json::json!({"max_count": 1});
+        let result = git_log(&daemon, params).unwrap();
+        let log: GitLogResult = serde_json::from_value(result).unwrap();
+
+        assert_eq!(log.commits.len(), 1);
+        assert_eq!(log.commits[0].message, "Second commit");
+    }
+
+    #[test]
+    fn test_git_log_path_filter() {
+        let tmp = tempdir().unwrap();
+        let repo_path = tmp.path();
+        let _repo = create_test_repo(repo_path);
+
+        let daemon = Daemon {
+            root: repo_path.to_path_buf(),
+            changelog: std::sync::Arc::new(crate::changelog::ChangeLog::with_capacity(10)),
+            search_cache: std::sync::Arc::new(crate::search_cache::SearchCache::new(10)),
+            backends: crate::backends::BackendRegistry::new(),
+            frame_pool: std::sync::Arc::new(crate::buffer_pool::BufferPool::new(1, 1024)),
+            metrics: std::sync::Arc::new(crate::metrics::ToolMetrics::new()),
+        };
+
+        let params = serde_json::json!({"path": "file1.txt"});
+        let result = git_log(&daemon, params).unwrap();
+        let log: GitLogResult = serde_json::from_value(result).unwrap();
+
+        // libgit2 path filtering implementation I wrote checks if the path was touched.
+        // file1.txt was touched in the first commit.
+        assert_eq!(log.commits.len(), 1);
+        assert_eq!(log.commits[0].message, "First commit");
+    }
+
+    #[test]
+    fn test_git_diff_basic() {
+        let tmp = tempdir().unwrap();
+        let repo_path = tmp.path();
+        let _repo = create_test_repo(repo_path);
+
+        let daemon = Daemon {
+            root: repo_path.to_path_buf(),
+            changelog: std::sync::Arc::new(crate::changelog::ChangeLog::with_capacity(10)),
+            search_cache: std::sync::Arc::new(crate::search_cache::SearchCache::new(10)),
+            backends: crate::backends::BackendRegistry::new(),
+            frame_pool: std::sync::Arc::new(crate::buffer_pool::BufferPool::new(1, 1024)),
+            metrics: std::sync::Arc::new(crate::metrics::ToolMetrics::new()),
+        };
+
+        // Diff between HEAD^ and HEAD
+        let params = serde_json::json!({"base": "HEAD^", "target": "HEAD"});
+        let result = git_diff(&daemon, params).unwrap();
+        let diff_res: GitDiffResult = serde_json::from_value(result).unwrap();
+
+        assert!(diff_res.diff.contains("+++ b/file2.txt"));
+        assert!(diff_res.diff.contains("+world"));
     }
 }

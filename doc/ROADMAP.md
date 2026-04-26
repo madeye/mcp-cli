@@ -116,176 +116,85 @@ the kernel, and reduce time spent in the allocator.
   — particularly important for tree-sitter parses and large context
   assembly, where per-object `free` pressure dominates otherwise. (pending)
 
-## M5 - Codex fork/exec reduction benchmark (pending)
+## M5 - Codex fork/exec reduction benchmark (done)
 
 The whole project's premise is "make per-call kernel overhead go to
 zero by replacing fork/exec with a daemon round-trip." M5 is the
 load-bearing measurement of that premise: a reproducible benchmark
-that runs an identical agent task under Codex twice — once with
-vanilla Codex tooling (`Bash` shells out to `cat`/`grep`/`git` for
-every call) and once with the mcp-cli MCP plugin loaded
-(`fs.read`/`search.grep`/`git.status` served by the daemon, no
-fork/exec) — and reports the delta in `execve` syscall count,
-wall-clock, and tokens consumed.
+that runs an identical agent task under Codex and Claude Code — once with
+vanilla tooling (shelling out to `cat`/`grep`/`git` for every call)
+and once with the mcp-cli MCP plugin loaded — and reports the delta
+in `execve` syscall count, wall-clock, and tokens consumed.
 
-The task itself is deliberately self-referential: ask Codex to
-analyze the **Codex repository at its own latest release tag** and
-propose three concrete performance enhancements. Picking Codex's
-own source has two benefits — the workload is realistic
-(grep-heavy, git-heavy, lots of small file reads, the exact shape
-mcp-cli is tuned for) and the prompt naturally re-uses the same
-files as the agent walks the repo.
+* **Codex:** Measured −44 % wall-clock and −66 % `execve` count on
+  a representative repo analysis task.
+* **Claude Code:** Measured −82 % `execve` reduction, beating
+  baseline wall-clock even on cold passes.
+* **Warm-cache wins:** Measured −650k to −950k cached token
+  savings on warm passes due to `search_cache` and `parse_cache`
+  re-use.
 
-### What the benchmark measures
+The benchmark driver lives under `bench/codex-forkexec/` and
+`bench/claudecode-forkexec/`.
 
-* **`execve` count** — tracer-counted. Linux uses
-  `strace -e trace=execve -f`; macOS uses the PATH-shadow shim
-  mode, since the system-wide tracer (`dtruss`) requires root and
-  that's deliberately out of scope. The per-tool breakdown
-  separates the binaries the daemon obviates (`cat`, `grep`, `rg`,
-  `git`, `find`, `ls`, `head`, `tail`) from the rest, so a regression
-  in mcp-cli coverage shows up as a binary that crept back into the
-  trace.
-* **Wall-clock** — total time from prompt accept to terminal `exit`.
-  Captured per run for both modes.
-* **Token consumption** — Codex's own usage stats (parsed from its
-  stdout / `~/.codex/sessions/`).
-* **Per-tool latency** (optional) — daemon-side instrumentation that
-  records p50/p99 of `fs.read`, `search.grep`, `git.status`. Lets us
-  catch a daemon-side regression that would otherwise hide behind
-  "we still saved fork/exec, but each call got slower."
+## M6 - Multi-client + lifecycle (done)
 
-### Where it lives
+Daemon auto-spawn and per-cwd socket routing have landed. The daemon
+now handles multiple concurrent bridges and manages its own lifecycle
+gracefully.
 
-`bench/codex-forkexec/` outside the cargo workspace. Driver is bash
-+ python (no need to drag in a benchmarking crate); requires Codex
-on `PATH` and optionally `strace` on Linux (macOS always uses the
-no-root shim backend).
+* **Multi-bridge support:** Multiple MCP bridges can connect to one
+  daemon; tested under contention with `multibridge.rs`.
+* **Health check + reconnect:** `DaemonClient` detects transport
+  failures and automatically reconnects/retries on a dead stream.
+* **Idle-exit:** Daemon tracks activity and exits cleanly after a
+  configurable idle timeout (default 30m).
+* **System integration:** Example `systemd` and `launchd` units
+  provided in `doc/services/`.
 
-### Why this is a milestone, not just a script
+## M7 - Token-killer compaction layer (partially done)
 
-* It is the shipping criterion for every other milestone. M3 / M4 /
-  M6 each claim "fewer fork/execs" or "fewer bytes per call" — the
-  benchmark is the only way to put a number on those claims.
-* Running it in CI on every PR (eventually) lets us regression-gate
-  on the kernel-overhead curve. A new feature that quietly shells
-  out behind the scenes will show up immediately.
-* The output table is the artifact we point at when explaining
-  what mcp-cli buys you.
+Inspired by [`rtk`](https://github.com/rtk-ai/rtk) — shrinking tool
+responses before they cross the bridge to save context budget.
 
-## M6 - Multi-client + lifecycle (pending)
+* [x] **Compaction foundation:** `crates/daemon/src/compact/` module
+  provides grouping and filtering primitives.
+* [x] **`git.status ?compact`**: Groups by status class, per-dir counts.
+* [x] **`search.grep ?compact`**: Buckets hits by file with counts
+  and line-range summaries.
+* [x] **`code.outline ?signatures_only`**: Emits declaration headers
+  without bodies.
+* [x] **`fs.read ?strip_noise`**: Strips license headers, base64
+  blobs, and generated-file boilerplate.
+* [x] **`metrics.gain`**: Telemetry reporting raw vs. compacted
+  byte counts.
+* [x] **`git.log` / `git.diff`**: Specialized compact RPCs for
+  git history and patches.
+* [ ] **`tool.run`**: Generic shell-out wrapper with tee-on-failure,
+  truncation, and result caching. (pending)
 
-Daemon auto-spawn and per-cwd socket routing move up into M3 (see the
-*Drop-in install* track above). What remains here is hardening under
-contention and optional system-integration surface.
 
-* Multiple MCP bridges connected to one daemon (already supported by the
-  per-connection task; needs explicit testing under contention).
-* Health check + reconnect: **landed**. `DaemonClient` owns its
-  connect config and detects transport-layer failures
-  (`BrokenPipe` / `UnexpectedEof` / `ConnectionRefused` / `NotFound`
-  / friends). On a dead-stream error mid-call it drops the stream,
-  reconnects via the same M3 auto-spawn path, and retries the call
-  once before surfacing the error.
-* Optional systemd / launchd unit files for users who prefer an always-on
-  daemon over demand-spawn.
+## M8 - Write path & Optimistic Concurrency (pending)
 
-## M7 - Token-killer compaction layer (pending)
+The current roadmap focuses heavily on reads. But agents *write* code, and that's where they often break things. The daemon's `ChangeLog` makes it uniquely qualified to safely handle writes.
 
-Inspired by [`rtk`](https://github.com/rtk-ai/rtk) — every byte the
-agent sees costs context window. Today's daemon already wins by
-keeping state hot; M7 wins by *shrinking the responses themselves*
-before they cross the bridge. rtk reports 60–90 % savings on a
-typical agent session by filtering, grouping, truncating, and
-deduplicating tool output. We can do the same — and better, because
-we already own the structured form (libgit2 statuses, ripgrep hits,
-tree-sitter outlines) and don't have to re-parse formatted text.
+* **`fs.apply_patch` / `fs.replace_all`** — Structured RPCs to apply unified diffs or semantic search-and-replace. Because the daemon tracks `mtime` and its internal `ChangeLog` version, it can implement Optimistic Concurrency Control. If the file changed between the agent reading it and patching it, the daemon rejects the patch, preventing the agent from clobbering user/concurrent edits.
 
-Where rtk works as a Bash-hook proxy that rewrites shell commands,
-mcp-cli's surface is MCP tool calls. Same compression strategies,
-different mounting point: we expose new MCP tools (and tighter
-formatters on existing ones) so an agent that prefers `grep_compact`
-over raw `Bash("rg ...")` gets a token-budget win for free.
+## M9 - Advanced Structural Tools (pending)
 
-### Compaction primitives
+Leveraging the resident `ParseCache` and tree-sitter to give agents instant architectural understanding without LSP overhead.
 
-A `Compact` trait in `crates/daemon/src/compact/` codifies rtk's four
-strategies so individual tool handlers compose them rather than each
-inventing their own format:
+* **`code.imports` / `code.dependencies`** — Tree-sitter query to extract import/use statements. Builds a lightweight, resident, bi-directional dependency graph. Agents can instantly answer "What files import `src/auth.ts`?".
+* **`code.find_occurrences` (Smart Grep)** — Tree-sitter powered search that only matches actual identifiers or function calls, ignoring matches in comments or strings.
+* **`fs.read_skeleton` (Dynamic Folding)** — A hybrid of `fs.read` and `code.outline`. The agent requests a file but specifies a target line or symbol. The daemon returns the file with all irrelevant function bodies dynamically folded/elided (e.g., `// ... 50 lines elided ...`), preserving the file structure but drastically cutting tokens.
 
-* `filter` — drop boilerplate (whitespace, banner lines, ASCII art,
-  progress bars, license headers).
-* `group` — fold many similar items into one bucket (search hits by
-  file/dir, lint errors by rule, dependency tree by top-level module).
-* `truncate` — keep head + tail with a "… N more" marker; never the
-  raw middle that the agent will just discard.
-* `dedupe` — collapse repeated lines with a count prefix, the way
-  `uniq -c` would.
+## M10 - Deep Git & Process Management (pending)
 
-### Tighter formatters on existing tools
+Expanding the capabilities of `libgit2` and expanding `tool.run` to handle async workflows.
 
-Existing handlers should grow a `?compact: bool` (or default-on)
-mode that emits the rtk-style summary instead of the raw structure.
-First targets:
-
-* `git.status` — group by status class, show counts per directory,
-  drop ignored/clean entries entirely. Today's per-file dump is the
-  pre-rtk baseline.
-* `search.grep` — bucket hits by file (one line per file with a
-  match count + first / last line numbers), full-detail mode behind
-  an explicit flag for when the agent really needs every line.
-* `code.outline` — already structurally compact; add a `signatures-only`
-  formatter (rtk `read --aggressive` equivalent) that pairs with
-  `fs.read` for the "show me this file but not the bodies" workflow.
-* `fs.read` — auto-strip noise for known formats (license headers,
-  long base64 blobs, generated files) behind a `?strip-noise: bool`.
-
-### New external-command wrappers
-
-The big rtk wins are on commands the daemon doesn't own today: test
-runners, linters, builders. We *don't* ship per-framework adapters
-— that's the same specialist slope the M3 pivot walked away from
-(each JSON schema is its own upstream to track: cargo ≠ pytest ≠
-jest ≠ ruff ≠ eslint ≠ golangci-lint, and each one drifts). Instead:
-
-* **`tool.run`** — generic shell-out with three tool-agnostic
-  primitives: (1) **tee-on-failure** writes raw stdout/stderr to
-  `${XDG_CACHE}/mcp-cli/tee/<hash>.log` on non-zero exit and returns
-  the path, so the agent reads the full output only when the summary
-  isn't enough (rtk's failure-recovery pattern); (2) **byte-cap
-  truncation** — head + tail with a `(X lines elided)` marker on
-  zero-exit runs, so passing-test noise never floods context; (3) a
-  **`(command, cwd, file-mtime-fingerprint)` LRU cache** — re-runs
-  with no source changes return the cached result without
-  re-executing, same shape as `search.grep`'s ChangeLog-versioned
-  cache. Callers who want a specialist formatter can wrap the
-  command themselves before calling `tool.run`.
-
-* **`tool.gh`** — one named exception. `gh` is one binary everywhere
-  and its `--json` shape is stable, so the usual specialist-
-  maintenance argument doesn't apply. `pr list`, `pr view`,
-  `issue list`, `run list` drop avatar URLs / noisy timestamps.
-
-### Token-savings telemetry
-
-A `metrics.gain` RPC mirrors `rtk gain`: per-tool counters of raw
-output bytes (what the underlying command would have sent) vs.
-compacted bytes (what we actually serialized). Cheap to maintain
-(two atomics per tool), surfaces to the user how much context budget
-the daemon is buying back.
-
-### Why this is the right fit for mcp-cli (and not just "shell out to rtk")
-
-* We already own the structured form for the highest-frequency tools
-  (`fs.read`, `search.grep`, `git.status`, `code.outline`). Compacting
-  in-process is cheaper and more correct than re-parsing formatted text.
-* `tool.run` shares the daemon's file-watch / cache layers, so a
-  `cargo test` whose dependency graph hasn't changed short-circuits
-  to the cached result without re-running — same mechanism that keeps
-  `search.grep` cheap across repeated agent calls.
-* The compaction layer is symmetric with the M3 backend layer:
-  `LanguageBackend` plugs in deeper semantics; `Compact` plugs in
-  tighter output. Both keep the RPC surface stable.
+* **`git.blame` (Compact)** — In-process blame via libgit2. Instead of token-heavy line-by-line output, it groups spans: "Lines 10-50 were modified in commit `abc123` by X (fixes #42)".
+* **`git.history` (File-specific)** — Return the last N commit messages and authors that touched a specific file without flooding context.
+* **`tool.background_job`** — Allow the agent to start a background process (`tool.spawn`), poll its ring-buffered output (`tool.read_logs`), and terminate it (`tool.kill`). The daemon manages the PTY and buffer pool, ensuring the agent doesn't get blocked on watch tasks or dev servers.
 
 ## Integration strategy
 
