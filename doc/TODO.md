@@ -55,7 +55,7 @@ Concrete, actionable items. Group headers track milestones in
 * [x] Multi-bridge contention test (`multibridge.rs`).
 * [x] `systemd` / `launchd` example units in `doc/services/`.
 
-## Token-Killer Compaction (M7) — In Progress
+## Token-Killer Compaction (M7) — Done
 
 * [x] `crates/daemon/src/compact/` foundation.
 * [x] `git.status ?compact` (grouped by status class).
@@ -66,8 +66,8 @@ Concrete, actionable items. Group headers track milestones in
 * [x] `metrics.gain` RPC (raw vs. compacted bytes).
 * [x] `git.log` RPC (compact one-liners).
 * [x] `git.diff` RPC (condensed patches).
-* [ ] `tool.run` RPC (tee-on-failure, truncation, caching).
-* [ ] `tool.gh` adapter for `pr` / `issue` views.
+* [x] `tool.run` RPC (tee-on-failure, truncation, caching).
+* [x] `tool.gh` adapter for `pr` / `issue` views.
 
 ## Write Path & Concurrency (M8) — Pending
 

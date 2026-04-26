@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -38,6 +39,7 @@ pub struct Daemon {
     pub root: PathBuf,
     pub changelog: Arc<ChangeLog>,
     pub search_cache: Arc<SearchCache>,
+    pub tool_run_cache: Arc<Mutex<HashMap<String, protocol::ToolRunResult>>>,
     pub backends: BackendRegistry,
     pub frame_pool: Arc<BufferPool>,
     pub metrics: Arc<ToolMetrics>,
@@ -66,6 +68,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
 
     let changelog = Arc::new(ChangeLog::with_capacity(cfg.changelog_capacity));
     let search_cache = Arc::new(SearchCache::new(cfg.search_cache_capacity));
+    let tool_run_cache = Arc::new(Mutex::new(HashMap::new()));
     let parse_cache = Arc::new(ParseCache::new(cfg.parse_cache_capacity));
     let _watch: WatchHandle =
         watcher::spawn(cfg.root.clone(), changelog.clone(), parse_cache.clone())?;
@@ -86,6 +89,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
         root: cfg.root,
         changelog,
         search_cache,
+        tool_run_cache,
         backends,
         frame_pool,
         metrics,
@@ -282,6 +286,8 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
         protocol::methods::CODE_OUTLINE_BATCH => handlers::code_outline_batch(daemon, req.params),
         protocol::methods::CODE_SYMBOLS => handlers::code_symbols(daemon, req.params),
         protocol::methods::CODE_SYMBOLS_BATCH => handlers::code_symbols_batch(daemon, req.params),
+        protocol::methods::TOOL_RUN => handlers::tool_run(daemon, req.params),
+        protocol::methods::TOOL_GH => handlers::tool_gh(daemon, req.params),
         protocol::methods::METRICS_GAIN => handlers::metrics_gain(daemon, req.params),
         protocol::methods::METRICS_TOOL_LATENCY => {
             handlers::metrics_tool_latency(daemon, req.params)

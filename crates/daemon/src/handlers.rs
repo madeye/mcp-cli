@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::process::Command;
 
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch};
@@ -11,7 +12,8 @@ use protocol::{
     FsReadBatchParams, FsReadBatchResult, FsReadParams, FsReadResult, FsScanParams, FsScanResult,
     FsSnapshotResult, GitCommit, GitDiffParams, GitDiffResult, GitLogParams, GitLogResult,
     GitStatusEntry, GitStatusParams, GitStatusResult, MetricsGainParams, MetricsToolLatencyParams,
-    RpcError, SearchContextLine, SearchGrepParams, SearchGrepResult, SearchHit,
+    RpcError, SearchContextLine, SearchGrepParams, SearchGrepResult, SearchHit, ToolGhParams,
+    ToolGhResult, ToolRunParams, ToolRunResult,
 };
 
 use crate::compact;
@@ -35,6 +37,8 @@ const SEARCH_DEFAULT_LIMIT: usize = 200;
 /// client sending `context: 1e9` otherwise makes the daemon stream the
 /// whole file per match.
 const SEARCH_CONTEXT_CAP: u32 = 20;
+const TOOL_RUN_DEFAULT_OUTPUT_LIMIT: usize = 64 * 1024;
+const TOOL_RUN_FAILURE_TAIL_LIMIT: usize = 16 * 1024;
 
 pub fn fs_read(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
     let params: FsReadParams = serde_json::from_value(params)
@@ -746,6 +750,182 @@ fn code_symbols_inner(
     })
 }
 
+pub fn tool_run(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
+    let params: ToolRunParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    if params.command.trim().is_empty() {
+        return Err(RpcError::new(-32602, "command must not be empty"));
+    }
+    let result = tool_run_inner(daemon, &params)?;
+    Ok(serde_json::to_value(result).unwrap())
+}
+
+fn tool_run_inner(daemon: &Daemon, params: &ToolRunParams) -> Result<ToolRunResult, RpcError> {
+    let cwd = match &params.cwd {
+        Some(cwd) => resolve_within(&daemon.root, cwd)?,
+        None => daemon.root.clone(),
+    };
+    let cwd_display = cwd
+        .strip_prefix(&daemon.root)
+        .unwrap_or(&cwd)
+        .to_string_lossy()
+        .to_string();
+    let (version, _) = daemon.changelog.snapshot();
+    let cache_key = if params.cache {
+        Some(tool_run_cache_key(version, &cwd_display, params))
+    } else {
+        None
+    };
+    if let Some(key) = &cache_key {
+        if let Some(mut cached) = daemon.tool_run_cache.lock().get(key).cloned() {
+            cached.cached = true;
+            return Ok(cached);
+        }
+    }
+
+    let output = Command::new(&params.command)
+        .args(&params.args)
+        .current_dir(&cwd)
+        .envs(params.env.iter().map(|e| (&e.name, &e.value)))
+        .output()
+        .map_err(|e| RpcError::new(-32070, format!("spawn {}: {e}", params.command)))?;
+
+    let limit = params
+        .max_output_bytes
+        .unwrap_or(TOOL_RUN_DEFAULT_OUTPUT_LIMIT)
+        .max(1);
+    let (stdout, stdout_truncated) = truncate_bytes(&output.stdout, limit);
+    let (stderr, stderr_truncated) = truncate_bytes(&output.stderr, limit);
+    let success = output.status.success();
+    let failure_output = if success {
+        String::new()
+    } else {
+        failure_tail(&output.stdout, &output.stderr)
+    };
+    let result = ToolRunResult {
+        command: params.command.clone(),
+        args: params.args.clone(),
+        cwd: cwd_display,
+        exit_code: output.status.code(),
+        success,
+        stdout,
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
+        failure_output,
+        cached: false,
+    };
+
+    let raw_bytes = serialized_size(&result);
+    daemon
+        .metrics
+        .record(protocol::methods::TOOL_RUN, raw_bytes, raw_bytes);
+
+    if success {
+        if let Some(key) = cache_key {
+            daemon.tool_run_cache.lock().insert(key, result.clone());
+        }
+    }
+    Ok(result)
+}
+
+fn tool_run_cache_key(version: u64, cwd: &str, params: &ToolRunParams) -> String {
+    serde_json::json!({
+        "version": version,
+        "cwd": cwd,
+        "command": params.command,
+        "args": params.args,
+        "env": params.env,
+        "max_output_bytes": params.max_output_bytes,
+    })
+    .to_string()
+}
+
+fn truncate_bytes(bytes: &[u8], max: usize) -> (String, bool) {
+    if bytes.len() <= max {
+        return (String::from_utf8_lossy(bytes).into_owned(), false);
+    }
+    let start = bytes.len().saturating_sub(max);
+    (
+        format!(
+            "[[mcp-cli: output truncated to last {max} bytes]]\n{}",
+            String::from_utf8_lossy(&bytes[start..])
+        ),
+        true,
+    )
+}
+
+fn failure_tail(stdout: &[u8], stderr: &[u8]) -> String {
+    let mut combined = Vec::with_capacity(stdout.len() + stderr.len() + 16);
+    if !stdout.is_empty() {
+        combined.extend_from_slice(b"$ stdout\n");
+        combined.extend_from_slice(stdout);
+    }
+    if !stderr.is_empty() {
+        if !combined.is_empty() && !combined.ends_with(b"\n") {
+            combined.push(b'\n');
+        }
+        combined.extend_from_slice(b"$ stderr\n");
+        combined.extend_from_slice(stderr);
+    }
+    truncate_bytes(&combined, TOOL_RUN_FAILURE_TAIL_LIMIT).0
+}
+
+pub fn tool_gh(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
+    let params: ToolGhParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let kind = params.kind.as_str();
+    if kind != "pr" && kind != "issue" {
+        return Err(RpcError::new(-32602, "kind must be `pr` or `issue`"));
+    }
+
+    let default_fields = match kind {
+        "pr" => "number,title,state,isDraft,author,headRefName,baseRefName,url,statusCheckRollup",
+        "issue" => "number,title,state,author,assignees,labels,url,comments",
+        _ => unreachable!(),
+    };
+    let fields = if params.fields.is_empty() {
+        default_fields.to_string()
+    } else {
+        params.fields.join(",")
+    };
+
+    let mut cmd = Command::new("gh");
+    cmd.current_dir(&daemon.root).arg(kind).arg("view");
+    if let Some(selector) = &params.selector {
+        cmd.arg(selector);
+    }
+    if let Some(repo) = &params.repo {
+        cmd.arg("--repo").arg(repo);
+    }
+    cmd.arg("--json").arg(&fields);
+
+    let output = cmd
+        .output()
+        .map_err(|e| RpcError::new(-32071, format!("spawn gh: {e}")))?;
+    let (stdout, _) = truncate_bytes(&output.stdout, TOOL_RUN_DEFAULT_OUTPUT_LIMIT);
+    let (stderr, _) = truncate_bytes(&output.stderr, TOOL_RUN_DEFAULT_OUTPUT_LIMIT);
+    let value = if output.status.success() {
+        serde_json::from_slice(&output.stdout).ok()
+    } else {
+        None
+    };
+    let result = ToolGhResult {
+        kind: params.kind,
+        selector: params.selector,
+        exit_code: output.status.code(),
+        success: output.status.success(),
+        value,
+        stdout,
+        stderr,
+    };
+    let raw_bytes = serialized_size(&result);
+    daemon
+        .metrics
+        .record(protocol::methods::TOOL_GH, raw_bytes, raw_bytes);
+    Ok(serde_json::to_value(result).unwrap())
+}
+
 pub fn metrics_gain(
     daemon: &Daemon,
     params: serde_json::Value,
@@ -905,20 +1085,27 @@ mod tests {
         repo
     }
 
+    fn test_daemon(root: &std::path::Path) -> Daemon {
+        Daemon {
+            root: root.to_path_buf(),
+            changelog: std::sync::Arc::new(crate::changelog::ChangeLog::with_capacity(10)),
+            search_cache: std::sync::Arc::new(crate::search_cache::SearchCache::new(10)),
+            tool_run_cache: std::sync::Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            backends: crate::backends::BackendRegistry::new(),
+            frame_pool: std::sync::Arc::new(crate::buffer_pool::BufferPool::new(1, 1024)),
+            metrics: std::sync::Arc::new(crate::metrics::ToolMetrics::new()),
+        }
+    }
+
     #[test]
     fn test_git_log_basic() {
         let tmp = tempdir().unwrap();
         let repo_path = tmp.path();
         let _repo = create_test_repo(repo_path);
 
-        let daemon = Daemon {
-            root: repo_path.to_path_buf(),
-            changelog: std::sync::Arc::new(crate::changelog::ChangeLog::with_capacity(10)),
-            search_cache: std::sync::Arc::new(crate::search_cache::SearchCache::new(10)),
-            backends: crate::backends::BackendRegistry::new(),
-            frame_pool: std::sync::Arc::new(crate::buffer_pool::BufferPool::new(1, 1024)),
-            metrics: std::sync::Arc::new(crate::metrics::ToolMetrics::new()),
-        };
+        let daemon = test_daemon(repo_path);
 
         let params = serde_json::json!({});
         let result = git_log(&daemon, params).unwrap();
@@ -936,14 +1123,7 @@ mod tests {
         let repo_path = tmp.path();
         let _repo = create_test_repo(repo_path);
 
-        let daemon = Daemon {
-            root: repo_path.to_path_buf(),
-            changelog: std::sync::Arc::new(crate::changelog::ChangeLog::with_capacity(10)),
-            search_cache: std::sync::Arc::new(crate::search_cache::SearchCache::new(10)),
-            backends: crate::backends::BackendRegistry::new(),
-            frame_pool: std::sync::Arc::new(crate::buffer_pool::BufferPool::new(1, 1024)),
-            metrics: std::sync::Arc::new(crate::metrics::ToolMetrics::new()),
-        };
+        let daemon = test_daemon(repo_path);
 
         let params = serde_json::json!({"max_count": 1});
         let result = git_log(&daemon, params).unwrap();
@@ -959,14 +1139,7 @@ mod tests {
         let repo_path = tmp.path();
         let _repo = create_test_repo(repo_path);
 
-        let daemon = Daemon {
-            root: repo_path.to_path_buf(),
-            changelog: std::sync::Arc::new(crate::changelog::ChangeLog::with_capacity(10)),
-            search_cache: std::sync::Arc::new(crate::search_cache::SearchCache::new(10)),
-            backends: crate::backends::BackendRegistry::new(),
-            frame_pool: std::sync::Arc::new(crate::buffer_pool::BufferPool::new(1, 1024)),
-            metrics: std::sync::Arc::new(crate::metrics::ToolMetrics::new()),
-        };
+        let daemon = test_daemon(repo_path);
 
         let params = serde_json::json!({"path": "file1.txt"});
         let result = git_log(&daemon, params).unwrap();
@@ -984,14 +1157,7 @@ mod tests {
         let repo_path = tmp.path();
         let _repo = create_test_repo(repo_path);
 
-        let daemon = Daemon {
-            root: repo_path.to_path_buf(),
-            changelog: std::sync::Arc::new(crate::changelog::ChangeLog::with_capacity(10)),
-            search_cache: std::sync::Arc::new(crate::search_cache::SearchCache::new(10)),
-            backends: crate::backends::BackendRegistry::new(),
-            frame_pool: std::sync::Arc::new(crate::buffer_pool::BufferPool::new(1, 1024)),
-            metrics: std::sync::Arc::new(crate::metrics::ToolMetrics::new()),
-        };
+        let daemon = test_daemon(repo_path);
 
         // Diff between HEAD^ and HEAD
         let params = serde_json::json!({"base": "HEAD^", "target": "HEAD"});
@@ -1000,5 +1166,48 @@ mod tests {
 
         assert!(diff_res.diff.contains("+++ b/file2.txt"));
         assert!(diff_res.diff.contains("+world"));
+    }
+
+    #[test]
+    fn test_tool_run_truncates_and_reports_failure_tail() {
+        let tmp = tempdir().unwrap();
+        let daemon = test_daemon(tmp.path());
+        let params = serde_json::json!({
+            "command": "sh",
+            "args": ["-c", "printf abcdefghij; printf errormsg >&2; exit 7"],
+            "max_output_bytes": 4
+        });
+        let result = tool_run(&daemon, params).unwrap();
+        let run: ToolRunResult = serde_json::from_value(result).unwrap();
+
+        assert_eq!(run.exit_code, Some(7));
+        assert!(!run.success);
+        assert!(run.stdout_truncated);
+        assert!(run.stderr_truncated);
+        assert!(run.stdout.ends_with("ghij"));
+        assert!(run.stderr.ends_with("rmsg"));
+        assert!(run.failure_output.contains("$ stdout"));
+        assert!(run.failure_output.contains("$ stderr"));
+    }
+
+    #[test]
+    fn test_tool_run_cache_reuses_successful_result_at_same_version() {
+        let tmp = tempdir().unwrap();
+        let daemon = test_daemon(tmp.path());
+        let params = serde_json::json!({
+            "command": "sh",
+            "args": ["-c", "printf cached"],
+            "cache": true
+        });
+
+        let first: ToolRunResult =
+            serde_json::from_value(tool_run(&daemon, params.clone()).unwrap()).unwrap();
+        let second: ToolRunResult =
+            serde_json::from_value(tool_run(&daemon, params).unwrap()).unwrap();
+
+        assert_eq!(first.stdout, "cached");
+        assert!(!first.cached);
+        assert!(second.cached);
+        assert_eq!(second.stdout, "cached");
     }
 }

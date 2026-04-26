@@ -51,6 +51,8 @@ pub mod methods {
     pub const CODE_OUTLINE_BATCH: &str = "code.outline_batch";
     pub const CODE_SYMBOLS: &str = "code.symbols";
     pub const CODE_SYMBOLS_BATCH: &str = "code.symbols_batch";
+    pub const TOOL_RUN: &str = "tool.run";
+    pub const TOOL_GH: &str = "tool.gh";
     pub const METRICS_GAIN: &str = "metrics.gain";
     pub const METRICS_TOOL_LATENCY: &str = "metrics.tool_latency";
 }
@@ -555,4 +557,89 @@ pub struct ToolLatencyEntry {
     pub latency_sum_us: u64,
     pub mean_us: u64,
     pub max_us: u64,
+}
+
+// ---- tool.run ------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolRunParams {
+    /// Executable name or absolute path. Shell features are intentionally
+    /// not interpreted here; callers that need a shell can pass
+    /// `command: "sh", args: ["-lc", "..."]`.
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Optional working directory, relative to the project root or
+    /// absolute within it. Defaults to the daemon root.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub env: Vec<ToolRunEnv>,
+    /// Per-stream output cap in bytes. Defaults to 64 KiB.
+    #[serde(default)]
+    pub max_output_bytes: Option<usize>,
+    /// Cache successful results while the watched tree version is
+    /// unchanged. Defaults to false because commands may read external
+    /// state.
+    #[serde(default)]
+    pub cache: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolRunEnv {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolRunResult {
+    pub command: String,
+    pub args: Vec<String>,
+    pub cwd: String,
+    pub exit_code: Option<i32>,
+    pub success: bool,
+    pub stdout: String,
+    pub stderr: String,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    /// Combined stdout/stderr tail on failure, useful when callers only
+    /// need the actionable error context. Empty on success.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub failure_output: String,
+    #[serde(default)]
+    pub cached: bool,
+}
+
+// ---- tool.gh -------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolGhParams {
+    /// `pr` or `issue`.
+    pub kind: String,
+    /// Number, URL, or branch accepted by `gh pr view` / `gh issue view`.
+    /// Omitted value lets gh choose its contextual default where supported.
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// JSON fields to request. Defaults to a compact set for each kind.
+    #[serde(default)]
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolGhResult {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    pub exit_code: Option<i32>,
+    pub success: bool,
+    /// Parsed JSON when gh returned valid JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>,
+    /// Raw stdout if JSON parsing failed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stdout: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stderr: String,
 }
