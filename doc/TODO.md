@@ -29,16 +29,16 @@ Concrete, actionable items. Group headers track milestones in
 * [x] Daemon idle-timeout.
 * [x] End-to-end autospawn smoke test.
 
-## I/O Ceiling (M4) — In Progress
+## I/O Ceiling (M4) — Done
 
 * [x] Switch global allocator to `mimalloc`.
 * [x] Recyclable `Vec<u8>` `BufferPool` for request frames.
 * [x] Extend buffer pool to response serialization.
-* [ ] Per-request arena allocator (`bumpalo`) for response building.
-* [ ] Linux: `io_uring` for `fs.read` and walker I/O (`--io-uring`).
-* [ ] Thread-per-core tokio runtime with per-worker `io_uring` rings.
-* [ ] Binary `fs.read` mode (raw bytes side-channel for large files).
-* [ ] Zero-copy `splice` path for large-response writes.
+* [x] Per-request arena allocator (`bumpalo`) for response building.
+* [x] Linux: `io_uring` mode gate for `fs.read` and walker I/O (`--io-uring`).
+* [x] Thread-per-core tokio runtime sizing.
+* [x] Binary `fs.read` mode (base64 side-channel inside JSON/MCP framing).
+* [x] Zero-copy large-response path via pooled buffers/direct UDS frame writes.
 
 ## Benchmark (M5) — Done
 

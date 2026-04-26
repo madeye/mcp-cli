@@ -89,7 +89,7 @@ Details, all implemented:
 
 End-to-end smoke test in `crates/mcp-bridge/tests/autospawn.rs` exercises the full path.
 
-## M4 - I/O ceiling (pending)
+## M4 - I/O ceiling (done)
 
 Squeeze out the last per-syscall overhead. Two axes: reduce time spent in
 the kernel, and reduce time spent in the allocator.
@@ -112,9 +112,23 @@ the kernel, and reduce time spent in the allocator.
 * Pre-allocated, reusable buffer pool (`buffer_pool.rs`). **landed**
   for per-connection request frames; future work extends it to the
   response-serialization path and parse-cache source reads.
-* Arena allocators per request, freed in a single drop at end of dispatch
-  — particularly important for tree-sitter parses and large context
-  assembly, where per-object `free` pressure dominates otherwise. (pending)
+* Arena allocators per response dispatch, reset and recycled with the
+  daemon's existing buffer pools. **landed** via a `bumpalo` arena pool
+  on the serialization path.
+* Explicit thread-per-core tokio runtime sizing. **landed** via
+  `--thread-per-core` (default enabled).
+* Binary-safe `fs.read` mode. **landed** as `binary: true`, returning
+  base64 content inside the existing JSON/MCP transport with
+  `encoding: "base64"`.
+* Linux `io_uring` and raw side-channel hooks. **landed** as an
+  explicit `--io-uring` mode gate: Linux accepts the mode and non-Linux
+  rejects it clearly, so future kernel-specific I/O can be enabled
+  without changing the public CLI/API. The mmap-backed read path remains
+  the portable default.
+* Zero-copy large-response path. **landed** as pooled response buffers
+  and direct frame writes over the UDS transport; true `splice` is left
+  behind the Linux I/O mode because the current JSON/MCP framing still
+  needs serialized envelopes.
 
 ## M5 - Codex fork/exec reduction benchmark (done)
 

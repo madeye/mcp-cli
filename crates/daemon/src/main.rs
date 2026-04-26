@@ -73,10 +73,31 @@ struct Args {
     /// don't linger after the agent session ends.
     #[arg(long, default_value = "30m")]
     idle_timeout: String,
+
+    /// Enable Linux io_uring I/O mode. Rejected on non-Linux hosts.
+    #[arg(long, default_value_t = false)]
+    io_uring: bool,
+
+    /// Size the Tokio runtime explicitly to one worker per logical CPU.
+    #[arg(long, default_value_t = true)]
+    thread_per_core: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let worker_threads = if args.thread_per_core {
+        num_cpus::get().max(1)
+    } else {
+        1
+    };
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .build()?;
+    rt.block_on(run(args, worker_threads))
+}
+
+async fn run(args: Args, worker_threads: usize) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -84,7 +105,6 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let args = Args::parse();
     let root = match args.root {
         Some(r) => r,
         None => std::env::current_dir()?,
@@ -107,6 +127,8 @@ async fn main() -> Result<()> {
         parse_cache_capacity = args.parse_cache_capacity,
         prewarm = !args.no_prewarm,
         idle_timeout = ?idle_timeout,
+        io_uring = args.io_uring,
+        worker_threads,
         "starting daemon",
     );
     server::serve(server::Config {
@@ -117,6 +139,7 @@ async fn main() -> Result<()> {
         parse_cache_capacity: args.parse_cache_capacity,
         prewarm_enabled: !args.no_prewarm,
         idle_timeout,
+        io_uring_enabled: args.io_uring,
     })
     .await
 }

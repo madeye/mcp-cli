@@ -5,6 +5,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
+use base64::Engine;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch};
 use ignore::WalkBuilder;
@@ -114,6 +115,14 @@ fn fs_read_inner(daemon: &Daemon, params: &FsReadParams) -> Result<FsReadResult,
             bytes_read: 0,
             total_size: 0,
             content: String::new(),
+            encoding: Some(
+                if params.binary {
+                    "base64"
+                } else {
+                    "utf8_lossy"
+                }
+                .to_string(),
+            ),
             truncated: false,
             stripped_regions: Vec::new(),
         });
@@ -133,7 +142,11 @@ fn fs_read_inner(daemon: &Daemon, params: &FsReadParams) -> Result<FsReadResult,
     let end = offset + limit;
     let slice = &mmap[offset as usize..end as usize];
 
-    let content = String::from_utf8_lossy(slice).into_owned();
+    let content = if params.binary {
+        base64::engine::general_purpose::STANDARD.encode(slice)
+    } else {
+        String::from_utf8_lossy(slice).into_owned()
+    };
     let truncated = end < total_size;
 
     // Detection uses cues from the head of the file (shebang, leading
@@ -141,7 +154,8 @@ fn fs_read_inner(daemon: &Daemon, params: &FsReadParams) -> Result<FsReadResult,
     // reads starting at byte 0 — an offset>0 slice is almost certainly
     // a scroll-page, not a fresh view, and boilerplate won't be there
     // anyway.
-    let (content, stripped_regions) = if params.strip_noise && params.offset == 0 {
+    let (content, stripped_regions) = if params.strip_noise && !params.binary && params.offset == 0
+    {
         let stripped = compact::strip_noise::strip_noise(&content);
         (stripped.content, stripped.regions)
     } else {
@@ -155,6 +169,14 @@ fn fs_read_inner(daemon: &Daemon, params: &FsReadParams) -> Result<FsReadResult,
         bytes_read: limit,
         total_size,
         content,
+        encoding: Some(
+            if params.binary {
+                "base64"
+            } else {
+                "utf8_lossy"
+            }
+            .to_string(),
+        ),
         truncated,
         stripped_regions,
     })
@@ -1960,6 +1982,7 @@ mod tests {
                 reg
             },
             frame_pool: std::sync::Arc::new(crate::buffer_pool::BufferPool::new(1, 1024)),
+            arena_pool: std::sync::Arc::new(parking_lot::Mutex::new(Vec::new())),
             metrics: std::sync::Arc::new(crate::metrics::ToolMetrics::new()),
             jobs: std::sync::Arc::new(crate::server::JobTable {
                 next_id: std::sync::atomic::AtomicU64::new(1),
@@ -2092,6 +2115,23 @@ mod tests {
         assert_eq!(read.version, 0);
         assert!(read.mtime_ns > 0);
         assert_eq!(read.content, "one\n");
+    }
+
+    #[test]
+    fn test_fs_read_binary_returns_base64() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("bin.dat"), [0_u8, 1, 2, 255]).unwrap();
+        let daemon = test_daemon(tmp.path());
+
+        let result = fs_read(
+            &daemon,
+            serde_json::json!({"path": "bin.dat", "binary": true}),
+        )
+        .unwrap();
+        let read: FsReadResult = serde_json::from_value(result).unwrap();
+
+        assert_eq!(read.encoding.as_deref(), Some("base64"));
+        assert_eq!(read.content, "AAEC/w==");
     }
 
     #[test]
