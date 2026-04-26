@@ -86,3 +86,12 @@ Concrete, actionable items. Group headers track milestones in
 * [x] `git.blame` (Compact) RPC.
 * [x] `git.history` (File-specific) RPC.
 * [x] `tool.spawn` / `tool.read_logs` / `tool.kill` (Background jobs).
+
+## Hardening, docs, and release polish (M11) — Pending
+
+* [ ] Bridge-level integration tests for `fs.apply_patch`, `code.dependencies`, `git.blame`, and background jobs.
+* [ ] Real Linux `io_uring` reads/walks plus raw-byte side channel for large `fs.read` responses.
+* [ ] Background job cleanup and retention limits for finished jobs/logs.
+* [ ] Refresh `doc/PROTOCOL.md` for all RPCs added in M7-M10.
+* [ ] Re-run Codex and Claude Code benchmarks and update headline numbers.
+* [ ] Add changelog/release notes and tag a versioned release.
