@@ -112,6 +112,8 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
     let daemon_method = match name {
         "fs_read" => protocol::methods::FS_READ,
         "fs_read_batch" => protocol::methods::FS_READ_BATCH,
+        "fs_apply_patch" => protocol::methods::FS_APPLY_PATCH,
+        "fs_replace_all" => protocol::methods::FS_REPLACE_ALL,
         "fs_snapshot" => protocol::methods::FS_SNAPSHOT,
         "fs_changes" => protocol::methods::FS_CHANGES,
         "fs_scan" => protocol::methods::FS_SCAN,
@@ -142,7 +144,7 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "fs_read",
-            "description": "Read a file from the project root via the daemon's mmap-backed VFS. Set `strip_noise: true` to collapse license headers, long base64 blobs, and `@generated` bodies into short `[[mcp-cli: stripped …]]` markers — original line ranges are reported in `stripped_regions` so callers can ask for specific lines back if needed.",
+            "description": "Read a file from the project root via the daemon's mmap-backed VFS. Returns `version` and `mtime_ns` tokens that can be echoed into write RPCs for optimistic concurrency. Set `strip_noise: true` to collapse license headers, long base64 blobs, and `@generated` bodies into short `[[mcp-cli: stripped …]]` markers — original line ranges are reported in `stripped_regions` so callers can ask for specific lines back if needed.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -176,6 +178,36 @@ fn tool_definitions() -> Value {
                     }
                 },
                 "required": ["requests"]
+            }
+        },
+        {
+            "name": "fs_apply_patch",
+            "description": "Apply unified diff hunks to one existing file. Supports optimistic concurrency with `expected_version` from fs_read/fs_snapshot and `expected_mtime_ns` from fs_read; stale writes are rejected before touching the file.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Existing file path relative to project root."},
+                    "patch": {"type": "string", "description": "Unified diff hunks for this file."},
+                    "expected_version": {"type": "integer", "minimum": 0, "description": "Optional ChangeLog version returned by fs_read or fs_snapshot."},
+                    "expected_mtime_ns": {"type": "integer", "minimum": 0, "description": "Optional mtime_ns returned by fs_read."}
+                },
+                "required": ["path", "patch"]
+            }
+        },
+        {
+            "name": "fs_replace_all",
+            "description": "Replace every literal occurrence of a string in one existing file. Supports the same optimistic concurrency fields as fs_apply_patch and can fail instead of writing when `max_replacements` would be exceeded.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Existing file path relative to project root."},
+                    "search": {"type": "string"},
+                    "replacement": {"type": "string"},
+                    "expected_version": {"type": "integer", "minimum": 0, "description": "Optional ChangeLog version returned by fs_read or fs_snapshot."},
+                    "expected_mtime_ns": {"type": "integer", "minimum": 0, "description": "Optional mtime_ns returned by fs_read."},
+                    "max_replacements": {"type": "integer", "minimum": 0, "description": "Fail without writing if the occurrence count exceeds this cap."}
+                },
+                "required": ["path", "search", "replacement"]
             }
         },
         {

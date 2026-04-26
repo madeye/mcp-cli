@@ -1,19 +1,21 @@
-use std::fs::File;
+use std::fs::{self, File};
 use std::process::Command;
+use std::time::UNIX_EPOCH;
 
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch};
 use ignore::WalkBuilder;
 use memmap2::Mmap;
 use protocol::{
-    CodeOutlineBatchItem, CodeOutlineBatchParams, CodeOutlineBatchResult, CodeOutlineParams,
-    CodeOutlineResult, CodeSymbolsBatchItem, CodeSymbolsBatchParams, CodeSymbolsBatchResult,
-    CodeSymbolsParams, CodeSymbolsResult, FsChangesParams, FsChangesResult, FsReadBatchItem,
-    FsReadBatchParams, FsReadBatchResult, FsReadParams, FsReadResult, FsScanParams, FsScanResult,
-    FsSnapshotResult, GitCommit, GitDiffParams, GitDiffResult, GitLogParams, GitLogResult,
-    GitStatusEntry, GitStatusParams, GitStatusResult, MetricsGainParams, MetricsToolLatencyParams,
-    RpcError, SearchContextLine, SearchGrepParams, SearchGrepResult, SearchHit, ToolGhParams,
-    ToolGhResult, ToolRunParams, ToolRunResult,
+    ChangeKind, CodeOutlineBatchItem, CodeOutlineBatchParams, CodeOutlineBatchResult,
+    CodeOutlineParams, CodeOutlineResult, CodeSymbolsBatchItem, CodeSymbolsBatchParams,
+    CodeSymbolsBatchResult, CodeSymbolsParams, CodeSymbolsResult, FsApplyPatchParams,
+    FsApplyPatchResult, FsChangesParams, FsChangesResult, FsReadBatchItem, FsReadBatchParams,
+    FsReadBatchResult, FsReadParams, FsReadResult, FsReplaceAllParams, FsReplaceAllResult,
+    FsScanParams, FsScanResult, FsSnapshotResult, GitCommit, GitDiffParams, GitDiffResult,
+    GitLogParams, GitLogResult, GitStatusEntry, GitStatusParams, GitStatusResult,
+    MetricsGainParams, MetricsToolLatencyParams, RpcError, SearchContextLine, SearchGrepParams,
+    SearchGrepResult, SearchHit, ToolGhParams, ToolGhResult, ToolRunParams, ToolRunResult,
 };
 
 use crate::compact;
@@ -88,14 +90,18 @@ fn fs_read_inner(daemon: &Daemon, params: &FsReadParams) -> Result<FsReadResult,
     let path = resolve_within(&daemon.root, &params.path)?;
 
     let file = File::open(&path).map_err(|e| RpcError::new(-32010, format!("open: {e}")))?;
-    let total_size = file
+    let metadata = file
         .metadata()
-        .map_err(|e| RpcError::new(-32011, format!("stat: {e}")))?
-        .len();
+        .map_err(|e| RpcError::new(-32011, format!("stat: {e}")))?;
+    let total_size = metadata.len();
+    let mtime_ns = metadata_mtime_ns(&metadata);
+    let (version, _) = daemon.changelog.snapshot();
 
     if total_size == 0 {
         return Ok(FsReadResult {
             path: params.path.clone(),
+            version,
+            mtime_ns,
             bytes_read: 0,
             total_size: 0,
             content: String::new(),
@@ -135,6 +141,8 @@ fn fs_read_inner(daemon: &Daemon, params: &FsReadParams) -> Result<FsReadResult,
 
     Ok(FsReadResult {
         path: params.path.clone(),
+        version,
+        mtime_ns,
         bytes_read: limit,
         total_size,
         content,
@@ -169,6 +177,221 @@ pub fn fs_changes(
         overflowed,
     })
     .unwrap())
+}
+
+pub fn fs_apply_patch(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: FsApplyPatchParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let path = resolve_within(&daemon.root, &params.path)?;
+    check_write_preconditions(
+        daemon,
+        &path,
+        params.expected_version,
+        params.expected_mtime_ns,
+    )?;
+
+    let content =
+        fs::read_to_string(&path).map_err(|e| RpcError::new(-32080, format!("read: {e}")))?;
+    let patched = apply_unified_patch(&content, &params.patch)?;
+    write_file_checked(&path, patched.as_bytes())?;
+    record_daemon_write(daemon, &path);
+    let metadata = fs::metadata(&path).map_err(|e| RpcError::new(-32011, format!("stat: {e}")))?;
+    let (version, _) = daemon.changelog.snapshot();
+    let result = FsApplyPatchResult {
+        path: params.path,
+        applied: true,
+        version,
+        mtime_ns: metadata_mtime_ns(&metadata),
+    };
+    Ok(serde_json::to_value(result).unwrap())
+}
+
+pub fn fs_replace_all(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: FsReplaceAllParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    if params.search.is_empty() {
+        return Err(RpcError::new(-32602, "search must not be empty"));
+    }
+    let path = resolve_within(&daemon.root, &params.path)?;
+    check_write_preconditions(
+        daemon,
+        &path,
+        params.expected_version,
+        params.expected_mtime_ns,
+    )?;
+
+    let content =
+        fs::read_to_string(&path).map_err(|e| RpcError::new(-32080, format!("read: {e}")))?;
+    let replacements = content.matches(&params.search).count();
+    if let Some(max) = params.max_replacements {
+        if replacements > max {
+            return Err(RpcError::new(
+                -32086,
+                format!("replacement count {replacements} exceeds max_replacements {max}"),
+            ));
+        }
+    }
+    let replaced = content.replace(&params.search, &params.replacement);
+    if replacements > 0 {
+        write_file_checked(&path, replaced.as_bytes())?;
+        record_daemon_write(daemon, &path);
+    }
+    let metadata = fs::metadata(&path).map_err(|e| RpcError::new(-32011, format!("stat: {e}")))?;
+    let (version, _) = daemon.changelog.snapshot();
+    let result = FsReplaceAllResult {
+        path: params.path,
+        replacements,
+        version,
+        mtime_ns: metadata_mtime_ns(&metadata),
+    };
+    Ok(serde_json::to_value(result).unwrap())
+}
+
+fn check_write_preconditions(
+    daemon: &Daemon,
+    path: &std::path::Path,
+    expected_version: Option<u64>,
+    expected_mtime_ns: Option<u64>,
+) -> Result<(), RpcError> {
+    if let Some(expected) = expected_version {
+        let (current, _) = daemon.changelog.snapshot();
+        if current != expected {
+            return Err(RpcError::new(
+                -32082,
+                format!("stale write: expected version {expected}, current version {current}"),
+            ));
+        }
+    }
+    if let Some(expected) = expected_mtime_ns {
+        let metadata =
+            fs::metadata(path).map_err(|e| RpcError::new(-32011, format!("stat: {e}")))?;
+        let current = metadata_mtime_ns(&metadata);
+        if current != expected {
+            return Err(RpcError::new(
+                -32083,
+                format!("stale write: expected mtime_ns {expected}, current mtime_ns {current}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_file_checked(path: &std::path::Path, bytes: &[u8]) -> Result<(), RpcError> {
+    fs::write(path, bytes).map_err(|e| RpcError::new(-32081, format!("write: {e}")))
+}
+
+fn record_daemon_write(daemon: &Daemon, path: &std::path::Path) {
+    let rel = path
+        .strip_prefix(&daemon.root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string();
+    daemon.changelog.record(rel, ChangeKind::Modified);
+}
+
+fn metadata_mtime_ns(metadata: &fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos().min(u64::MAX as u128) as u64)
+        .unwrap_or(0)
+}
+
+fn apply_unified_patch(original: &str, patch: &str) -> Result<String, RpcError> {
+    let original_lines: Vec<&str> = original.split_inclusive('\n').collect();
+    let patch_lines: Vec<&str> = patch.split_inclusive('\n').collect();
+    let mut output = String::with_capacity(original.len() + patch.len());
+    let mut original_idx = 0usize;
+    let mut patch_idx = 0usize;
+    let mut saw_hunk = false;
+
+    while patch_idx < patch_lines.len() {
+        let line = patch_lines[patch_idx];
+        if !line.starts_with("@@ ") {
+            patch_idx += 1;
+            continue;
+        }
+        saw_hunk = true;
+        let (old_start, _) = parse_hunk_header(line)?;
+        let hunk_start = old_start.saturating_sub(1);
+        if hunk_start < original_idx || hunk_start > original_lines.len() {
+            return Err(RpcError::new(-32084, "patch hunk starts outside file"));
+        }
+        for line in &original_lines[original_idx..hunk_start] {
+            output.push_str(line);
+        }
+        original_idx = hunk_start;
+        patch_idx += 1;
+
+        while patch_idx < patch_lines.len() && !patch_lines[patch_idx].starts_with("@@ ") {
+            let hunk_line = patch_lines[patch_idx];
+            if hunk_line.starts_with("--- ") || hunk_line.starts_with("+++ ") {
+                break;
+            }
+            if hunk_line.starts_with("\\ No newline at end of file") {
+                patch_idx += 1;
+                continue;
+            }
+            let (tag, content) = hunk_line.split_at(1);
+            match tag {
+                " " => {
+                    let current = original_lines.get(original_idx).ok_or_else(|| {
+                        RpcError::new(-32084, "patch context extends beyond file")
+                    })?;
+                    if *current != content {
+                        return Err(RpcError::new(-32084, "patch context mismatch"));
+                    }
+                    output.push_str(current);
+                    original_idx += 1;
+                }
+                "-" => {
+                    let current = original_lines.get(original_idx).ok_or_else(|| {
+                        RpcError::new(-32084, "patch removal extends beyond file")
+                    })?;
+                    if *current != content {
+                        return Err(RpcError::new(-32084, "patch removal mismatch"));
+                    }
+                    original_idx += 1;
+                }
+                "+" => output.push_str(content),
+                _ => return Err(RpcError::new(-32084, "invalid patch hunk line")),
+            }
+            patch_idx += 1;
+        }
+    }
+
+    if !saw_hunk {
+        return Err(RpcError::new(-32084, "patch contains no hunks"));
+    }
+    for line in &original_lines[original_idx..] {
+        output.push_str(line);
+    }
+    Ok(output)
+}
+
+fn parse_hunk_header(header: &str) -> Result<(usize, usize), RpcError> {
+    let old = header
+        .split_whitespace()
+        .find(|part| part.starts_with('-'))
+        .ok_or_else(|| RpcError::new(-32084, "invalid patch hunk header"))?;
+    let old = old.trim_start_matches('-');
+    let mut parts = old.split(',');
+    let start = parts
+        .next()
+        .and_then(|s| s.parse::<usize>().ok())
+        .ok_or_else(|| RpcError::new(-32084, "invalid patch old start"))?;
+    let count = parts
+        .next()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1);
+    Ok((start, count))
 }
 
 pub fn fs_scan(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
@@ -1087,7 +1310,7 @@ mod tests {
 
     fn test_daemon(root: &std::path::Path) -> Daemon {
         Daemon {
-            root: root.to_path_buf(),
+            root: root.canonicalize().unwrap(),
             changelog: std::sync::Arc::new(crate::changelog::ChangeLog::with_capacity(10)),
             search_cache: std::sync::Arc::new(crate::search_cache::SearchCache::new(10)),
             tool_run_cache: std::sync::Arc::new(parking_lot::Mutex::new(
@@ -1209,5 +1432,136 @@ mod tests {
         assert!(!first.cached);
         assert!(second.cached);
         assert_eq!(second.stdout, "cached");
+    }
+
+    #[test]
+    fn test_fs_read_exposes_occ_tokens() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "one\n").unwrap();
+        let daemon = test_daemon(tmp.path());
+
+        let result = fs_read(&daemon, serde_json::json!({"path": "a.txt"})).unwrap();
+        let read: FsReadResult = serde_json::from_value(result).unwrap();
+
+        assert_eq!(read.version, 0);
+        assert!(read.mtime_ns > 0);
+        assert_eq!(read.content, "one\n");
+    }
+
+    #[test]
+    fn test_fs_replace_all_rejects_stale_version() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "one one\n").unwrap();
+        let daemon = test_daemon(tmp.path());
+        daemon
+            .changelog
+            .record("other.txt".to_string(), ChangeKind::Modified);
+
+        let err = fs_replace_all(
+            &daemon,
+            serde_json::json!({
+                "path": "a.txt",
+                "search": "one",
+                "replacement": "two",
+                "expected_version": 0
+            }),
+        )
+        .expect_err("stale version should be rejected");
+
+        assert_eq!(err.code, -32082);
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "one one\n"
+        );
+    }
+
+    #[test]
+    fn test_fs_replace_all_replaces_and_advances_changelog() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "one one\n").unwrap();
+        let daemon = test_daemon(tmp.path());
+
+        let result = fs_replace_all(
+            &daemon,
+            serde_json::json!({
+                "path": "a.txt",
+                "search": "one",
+                "replacement": "two",
+                "expected_version": 0,
+                "max_replacements": 2
+            }),
+        )
+        .unwrap();
+        let replaced: FsReplaceAllResult = serde_json::from_value(result).unwrap();
+
+        assert_eq!(replaced.replacements, 2);
+        assert_eq!(replaced.version, 1);
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "two two\n"
+        );
+    }
+
+    #[test]
+    fn test_fs_apply_patch_applies_clean_hunk() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let daemon = test_daemon(tmp.path());
+        let patch = "\
+--- a/a.txt
++++ b/a.txt
+@@ -1,3 +1,3 @@
+ one
+-two
++TWO
+ three
+";
+
+        let result = fs_apply_patch(
+            &daemon,
+            serde_json::json!({
+                "path": "a.txt",
+                "patch": patch,
+                "expected_version": 0
+            }),
+        )
+        .unwrap();
+        let applied: FsApplyPatchResult = serde_json::from_value(result).unwrap();
+
+        assert!(applied.applied);
+        assert_eq!(applied.version, 1);
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "one\nTWO\nthree\n"
+        );
+    }
+
+    #[test]
+    fn test_fs_apply_patch_rejects_context_mismatch() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let daemon = test_daemon(tmp.path());
+        let patch = "\
+@@ -1,3 +1,3 @@
+ one
+-missing
++TWO
+ three
+";
+
+        let err = fs_apply_patch(
+            &daemon,
+            serde_json::json!({
+                "path": "a.txt",
+                "patch": patch
+            }),
+        )
+        .expect_err("mismatched patch should fail");
+
+        assert_eq!(err.code, -32084);
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "one\ntwo\nthree\n"
+        );
     }
 }

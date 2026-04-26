@@ -40,6 +40,8 @@ pub mod methods {
     pub const PING: &str = "ping";
     pub const FS_READ: &str = "fs.read";
     pub const FS_READ_BATCH: &str = "fs.read_batch";
+    pub const FS_APPLY_PATCH: &str = "fs.apply_patch";
+    pub const FS_REPLACE_ALL: &str = "fs.replace_all";
     pub const FS_SNAPSHOT: &str = "fs.snapshot";
     pub const FS_CHANGES: &str = "fs.changes";
     pub const FS_SCAN: &str = "fs.scan";
@@ -77,6 +79,12 @@ pub struct FsReadParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FsReadResult {
     pub path: String,
+    /// ChangeLog version observed before the read. Echo this back as
+    /// `expected_version` on write RPCs for optimistic concurrency.
+    pub version: u64,
+    /// File mtime as nanoseconds since Unix epoch. Echo this back as
+    /// `expected_mtime_ns` on write RPCs for per-file OCC.
+    pub mtime_ns: u64,
     pub bytes_read: u64,
     pub total_size: u64,
     pub content: String,
@@ -139,6 +147,56 @@ pub struct FsReadBatchItem {
     pub result: Option<FsReadResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<RpcError>,
+}
+
+// ---- write path ---------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FsApplyPatchParams {
+    pub path: String,
+    /// Unified diff hunks for this file. File headers are accepted but
+    /// ignored; hunks must apply cleanly to the current file content.
+    pub patch: String,
+    /// Optional ChangeLog version previously returned by `fs.read` or
+    /// `fs.snapshot`. If the daemon has observed later writes, the RPC
+    /// fails with a stale-write error before touching the file.
+    #[serde(default)]
+    pub expected_version: Option<u64>,
+    /// Optional mtime previously returned by `fs.read`. If the file's
+    /// current mtime differs, the RPC fails before touching the file.
+    #[serde(default)]
+    pub expected_mtime_ns: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsApplyPatchResult {
+    pub path: String,
+    pub applied: bool,
+    pub version: u64,
+    pub mtime_ns: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FsReplaceAllParams {
+    pub path: String,
+    pub search: String,
+    pub replacement: String,
+    #[serde(default)]
+    pub expected_version: Option<u64>,
+    #[serde(default)]
+    pub expected_mtime_ns: Option<u64>,
+    /// Optional cap on replacements. If the search string occurs more
+    /// often than this cap, the RPC fails without writing.
+    #[serde(default)]
+    pub max_replacements: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsReplaceAllResult {
+    pub path: String,
+    pub replacements: usize,
+    pub version: u64,
+    pub mtime_ns: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

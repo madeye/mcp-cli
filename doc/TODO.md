@@ -69,10 +69,10 @@ Concrete, actionable items. Group headers track milestones in
 * [x] `tool.run` RPC (tee-on-failure, truncation, caching).
 * [x] `tool.gh` adapter for `pr` / `issue` views.
 
-## Write Path & Concurrency (M8) — Pending
+## Write Path & Concurrency (M8) — Done
 
-* [ ] `fs.apply_patch` RPC with Optimistic Concurrency Control (OCC).
-* [ ] `fs.replace_all` RPC with OCC.
+* [x] `fs.apply_patch` RPC with Optimistic Concurrency Control (OCC).
+* [x] `fs.replace_all` RPC with OCC.
 
 ## Advanced Structural Tools (M9) — Pending
 

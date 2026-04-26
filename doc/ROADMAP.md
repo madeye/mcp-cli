@@ -175,11 +175,17 @@ responses before they cross the bridge to save context budget.
 * [x] **`tool.gh`**: Compact GitHub CLI adapter for PR and issue views.
 
 
-## M8 - Write path & Optimistic Concurrency (pending)
+## M8 - Write path & Optimistic Concurrency (done)
 
 The current roadmap focuses heavily on reads. But agents *write* code, and that's where they often break things. The daemon's `ChangeLog` makes it uniquely qualified to safely handle writes.
 
-* **`fs.apply_patch` / `fs.replace_all`** — Structured RPCs to apply unified diffs or semantic search-and-replace. Because the daemon tracks `mtime` and its internal `ChangeLog` version, it can implement Optimistic Concurrency Control. If the file changed between the agent reading it and patching it, the daemon rejects the patch, preventing the agent from clobbering user/concurrent edits.
+* [x] **`fs.apply_patch` / `fs.replace_all`** — Structured RPCs
+  to apply unified diffs or literal search-and-replace. Because the
+  daemon tracks `mtime` and its internal `ChangeLog` version, callers
+  can pass `expected_mtime_ns` and/or `expected_version` for Optimistic
+  Concurrency Control. If the file changed between the agent reading
+  it and patching it, the daemon rejects the write before touching the
+  file, preventing clobbers of user/concurrent edits.
 
 ## M9 - Advanced Structural Tools (pending)
 
