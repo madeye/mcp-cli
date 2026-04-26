@@ -70,7 +70,8 @@ See `doc/roadmap.md` and `doc/todo.md`. M0 (skeleton), M1 (incremental sync), an
 
 User workflow preference: continue roadmap/TODO work one milestone at a
 time; open a PR only after a milestone is complete. For any commit, run
-the full local CI gate first:
+the full local CI gate first. For source PRs, rebase-merge the PR after
+GitHub CI passes:
 
 ```sh
 cargo fmt --all -- --check
