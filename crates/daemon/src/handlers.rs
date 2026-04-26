@@ -288,10 +288,7 @@ pub fn git_status(
     Ok(value)
 }
 
-pub fn git_log(
-    daemon: &Daemon,
-    params: serde_json::Value,
-) -> Result<serde_json::Value, RpcError> {
+pub fn git_log(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
     let params: GitLogParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let repo_root = match params.repo {
@@ -348,15 +345,22 @@ pub fn git_log(
                     .diff_tree_to_tree(Some(&parent_tree), Some(&tree), None)
                     .unwrap();
                 for delta in diff.deltas() {
-                    if delta.new_file().path().map_or(false, |p| p.to_string_lossy() == *path) ||
-                       delta.old_file().path().map_or(false, |p| p.to_string_lossy() == *path) {
+                    if delta
+                        .new_file()
+                        .path()
+                        .is_some_and(|p| p.to_string_lossy() == *path)
+                        || delta
+                            .old_file()
+                            .path()
+                            .is_some_and(|p| p.to_string_lossy() == *path)
+                    {
                         touched = true;
                         break;
                     }
                 }
             } else {
                 // First commit
-                touched = true; 
+                touched = true;
             }
             if !touched {
                 continue;
@@ -385,16 +389,15 @@ pub fn git_log(
     let result = GitLogResult { commits };
     let raw_bytes = serialized_size(&result);
     let value = serde_json::to_value(&result).unwrap();
-    // For git.log we don't have a separate compact mode yet, 
+    // For git.log we don't have a separate compact mode yet,
     // it's already compact (summaries only).
-    daemon.metrics.record(protocol::methods::GIT_LOG, raw_bytes, raw_bytes);
+    daemon
+        .metrics
+        .record(protocol::methods::GIT_LOG, raw_bytes, raw_bytes);
     Ok(value)
 }
 
-pub fn git_diff(
-    daemon: &Daemon,
-    params: serde_json::Value,
-) -> Result<serde_json::Value, RpcError> {
+pub fn git_diff(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
     let params: GitDiffParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let repo_root = match params.repo {
@@ -423,7 +426,7 @@ pub fn git_diff(
             .map_err(|e| RpcError::new(-32041, format!("revparse {target_rev}: {e}")))?
             .peel_to_tree()
             .map_err(|e| RpcError::new(-32046, format!("peel to tree: {e}")))?;
-        
+
         repo.diff_tree_to_tree(Some(&base_obj), Some(&target_obj), Some(&mut opts))
             .map_err(|e| RpcError::new(-32047, format!("diff: {e}")))?
     } else {
@@ -434,7 +437,7 @@ pub fn git_diff(
             .map_err(|e| RpcError::new(-32041, format!("revparse {base_rev}: {e}")))?
             .peel_to_tree()
             .map_err(|e| RpcError::new(-32046, format!("peel to tree: {e}")))?;
-        
+
         repo.diff_tree_to_workdir_with_index(Some(&base_obj), Some(&mut opts))
             .map_err(|e| RpcError::new(-32047, format!("diff: {e}")))?
     };
@@ -455,7 +458,9 @@ pub fn git_diff(
     let raw_bytes = serialized_size(&result);
     let value = serde_json::to_value(&result).unwrap();
     // For now git.diff is just raw patch, future M7 work could condense it.
-    daemon.metrics.record(protocol::methods::GIT_DIFF, raw_bytes, raw_bytes);
+    daemon
+        .metrics
+        .record(protocol::methods::GIT_DIFF, raw_bytes, raw_bytes);
     Ok(value)
 }
 
@@ -864,9 +869,9 @@ impl Sink for ContextSink<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
-    use std::fs;
     use git2::{Repository, Signature};
+    use std::fs;
+    use tempfile::tempdir;
 
     fn create_test_repo(path: &std::path::Path) -> Repository {
         let repo = Repository::init(path).unwrap();
@@ -880,7 +885,8 @@ mod tests {
             index.write().unwrap();
             let tree_id = index.write_tree().unwrap();
             let tree = repo.find_tree(tree_id).unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, "First commit", &tree, &[]).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "First commit", &tree, &[])
+                .unwrap();
         }
 
         {
@@ -892,7 +898,8 @@ mod tests {
             let tree_id = index.write_tree().unwrap();
             let tree = repo.find_tree(tree_id).unwrap();
             let parent = repo.head().unwrap().peel_to_commit().unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, "Second commit", &tree, &[&parent]).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "Second commit", &tree, &[&parent])
+                .unwrap();
         }
 
         repo
