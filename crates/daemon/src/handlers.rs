@@ -1,6 +1,8 @@
 use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use grep_regex::RegexMatcherBuilder;
@@ -15,17 +17,19 @@ use protocol::{
     CodeSymbolsParams, CodeSymbolsResult, DependencyEdge, FsApplyPatchParams, FsApplyPatchResult,
     FsChangesParams, FsChangesResult, FsReadBatchItem, FsReadBatchParams, FsReadBatchResult,
     FsReadParams, FsReadResult, FsReadSkeletonParams, FsReadSkeletonResult, FsReplaceAllParams,
-    FsReplaceAllResult, FsScanParams, FsScanResult, FsSnapshotResult, GitCommit, GitDiffParams,
-    GitDiffResult, GitLogParams, GitLogResult, GitStatusEntry, GitStatusParams, GitStatusResult,
+    FsReplaceAllResult, FsScanParams, FsScanResult, FsSnapshotResult, GitBlameParams,
+    GitBlameResult, GitBlameSpan, GitCommit, GitDiffParams, GitDiffResult, GitHistoryParams,
+    GitHistoryResult, GitLogParams, GitLogResult, GitStatusEntry, GitStatusParams, GitStatusResult,
     ImportEntry, MetricsGainParams, MetricsToolLatencyParams, RpcError, SearchContextLine,
     SearchGrepParams, SearchGrepResult, SearchHit, SkeletonElidedRegion, ToolGhParams,
-    ToolGhResult, ToolRunParams, ToolRunResult,
+    ToolGhResult, ToolKillParams, ToolKillResult, ToolReadLogsParams, ToolReadLogsResult,
+    ToolRunParams, ToolRunResult, ToolSpawnParams, ToolSpawnResult,
 };
 
 use crate::compact;
 use crate::languages::Language;
 use crate::search_cache::SearchKey;
-use crate::server::{resolve_within, Daemon};
+use crate::server::{resolve_within, BackgroundJob, Daemon};
 
 /// How many directory rows we keep per status class in compact mode
 /// before collapsing the rest into a synthetic `(other)` row. Picked
@@ -591,8 +595,10 @@ pub fn git_log(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json:
                     }
                 }
             } else {
-                // First commit
-                touched = true;
+                let tree = commit
+                    .tree()
+                    .map_err(|e| RpcError::new(-32045, format!("commit tree: {e}")))?;
+                touched = tree.get_path(Path::new(path)).is_ok();
             }
             if !touched {
                 continue;
@@ -694,6 +700,88 @@ pub fn git_diff(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json
         .metrics
         .record(protocol::methods::GIT_DIFF, raw_bytes, raw_bytes);
     Ok(value)
+}
+
+pub fn git_blame(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: GitBlameParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let repo_root = match params.repo {
+        Some(r) => resolve_within(&daemon.root, &r)?,
+        None => daemon.root.clone(),
+    };
+    let repo = git2::Repository::discover(&repo_root)
+        .map_err(|e| RpcError::new(-32020, format!("discover repo: {e}")))?;
+    let workdir = repo.workdir().unwrap_or(&repo_root);
+    let abs_path = resolve_within(&daemon.root, &params.path)?;
+    let repo_path = abs_path
+        .strip_prefix(workdir)
+        .map_err(|_| RpcError::new(-32049, "path is outside repository workdir"))?;
+    let blame = repo
+        .blame_file(repo_path, None)
+        .map_err(|e| RpcError::new(-32050, format!("blame: {e}")))?;
+    let mut spans = Vec::new();
+    for hunk in blame.iter() {
+        let oid = hunk.final_commit_id();
+        let commit = repo.find_commit(oid).ok();
+        let author = commit
+            .as_ref()
+            .and_then(|c| c.author().name().map(|s| s.to_string()))
+            .unwrap_or_else(|| "unknown".to_string());
+        let summary = commit
+            .as_ref()
+            .and_then(|c| c.summary().map(|s| s.to_string()))
+            .unwrap_or_default();
+        let start = hunk.final_start_line() as u32;
+        let lines = hunk.lines_in_hunk() as u32;
+        spans.push(GitBlameSpan {
+            start_line: start,
+            end_line: start + lines.saturating_sub(1),
+            lines,
+            sha: oid.to_string(),
+            author,
+            summary,
+        });
+    }
+    let result = GitBlameResult {
+        path: params.path,
+        spans,
+    };
+    let raw_bytes = serialized_size(&result);
+    daemon
+        .metrics
+        .record(protocol::methods::GIT_BLAME, raw_bytes, raw_bytes);
+    Ok(serde_json::to_value(result).unwrap())
+}
+
+pub fn git_history(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: GitHistoryParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let value = git_log(
+        daemon,
+        serde_json::to_value(GitLogParams {
+            repo: params.repo,
+            max_count: params.max_count,
+            revision: None,
+            path: Some(params.path.clone()),
+        })
+        .unwrap(),
+    )?;
+    let log: GitLogResult = serde_json::from_value(value).unwrap();
+    let result = GitHistoryResult {
+        path: params.path,
+        commits: log.commits,
+    };
+    let raw_bytes = serialized_size(&result);
+    daemon
+        .metrics
+        .record(protocol::methods::GIT_HISTORY, raw_bytes, raw_bytes);
+    Ok(serde_json::to_value(result).unwrap())
 }
 
 /// Approximate serialized byte cost of a response. We use the JSON
@@ -1540,6 +1628,161 @@ pub fn tool_gh(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json:
     Ok(serde_json::to_value(result).unwrap())
 }
 
+pub fn tool_spawn(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: ToolSpawnParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    if params.command.trim().is_empty() {
+        return Err(RpcError::new(-32602, "command must not be empty"));
+    }
+    let cwd = match &params.cwd {
+        Some(cwd) => resolve_within(&daemon.root, cwd)?,
+        None => daemon.root.clone(),
+    };
+    let mut child = Command::new(&params.command)
+        .args(&params.args)
+        .current_dir(&cwd)
+        .envs(params.env.iter().map(|e| (&e.name, &e.value)))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| RpcError::new(-32072, format!("spawn {}: {e}", params.command)))?;
+    let output = Arc::new(parking_lot::Mutex::new(String::new()));
+    if let Some(stdout) = child.stdout.take() {
+        spawn_log_reader(stdout, "$ stdout\n", output.clone());
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_log_reader(stderr, "$ stderr\n", output.clone());
+    }
+    let job_id = daemon
+        .jobs
+        .next_id
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let pid = Some(child.id());
+    daemon.jobs.jobs.lock().insert(
+        job_id,
+        BackgroundJob {
+            child,
+            output,
+            killed: false,
+            exit_code: None,
+        },
+    );
+    Ok(serde_json::to_value(ToolSpawnResult {
+        job_id,
+        pid,
+        command: params.command,
+        args: params.args,
+    })
+    .unwrap())
+}
+
+fn spawn_log_reader<R>(mut reader: R, prefix: &'static str, output: Arc<parking_lot::Mutex<String>>)
+where
+    R: Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut buf = [0_u8; 4096];
+        let mut wrote_prefix = false;
+        loop {
+            let n = match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(_) => break,
+            };
+            let mut out = output.lock();
+            if !wrote_prefix {
+                out.push_str(prefix);
+                wrote_prefix = true;
+            }
+            out.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        if wrote_prefix {
+            let mut out = output.lock();
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+    });
+}
+
+pub fn tool_read_logs(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: ToolReadLogsParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let mut jobs = daemon.jobs.jobs.lock();
+    let job = jobs
+        .get_mut(&params.job_id)
+        .ok_or_else(|| RpcError::new(-32073, format!("unknown job: {}", params.job_id)))?;
+    if job.exit_code.is_none() {
+        if let Some(status) = job
+            .child
+            .try_wait()
+            .map_err(|e| RpcError::new(-32074, format!("wait job {}: {e}", params.job_id)))?
+        {
+            job.exit_code = status.code();
+        }
+    }
+    let output = job.output.lock();
+    let start = params.offset.min(output.len());
+    let end = params
+        .max_bytes
+        .map(|max| start.saturating_add(max).min(output.len()))
+        .unwrap_or(output.len());
+    Ok(serde_json::to_value(ToolReadLogsResult {
+        job_id: params.job_id,
+        output: output[start..end].to_string(),
+        next_offset: end,
+        exit_code: job.exit_code,
+        running: job.exit_code.is_none() && !job.killed,
+        killed: job.killed,
+    })
+    .unwrap())
+}
+
+pub fn tool_kill(
+    daemon: &Daemon,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, RpcError> {
+    let params: ToolKillParams = serde_json::from_value(params)
+        .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
+    let mut jobs = daemon.jobs.jobs.lock();
+    let job = jobs
+        .get_mut(&params.job_id)
+        .ok_or_else(|| RpcError::new(-32073, format!("unknown job: {}", params.job_id)))?;
+    if job.exit_code.is_none() {
+        match job.child.try_wait() {
+            Ok(Some(status)) => job.exit_code = status.code(),
+            Ok(None) => {
+                job.child.kill().map_err(|e| {
+                    RpcError::new(-32075, format!("kill job {}: {e}", params.job_id))
+                })?;
+                let status = job.child.wait().map_err(|e| {
+                    RpcError::new(-32074, format!("wait job {}: {e}", params.job_id))
+                })?;
+                job.exit_code = status.code();
+                job.killed = true;
+            }
+            Err(e) => {
+                return Err(RpcError::new(
+                    -32074,
+                    format!("wait job {}: {e}", params.job_id),
+                ))
+            }
+        }
+    }
+    Ok(serde_json::to_value(ToolKillResult {
+        job_id: params.job_id,
+        killed: job.killed,
+        exit_code: job.exit_code,
+    })
+    .unwrap())
+}
+
 pub fn metrics_gain(
     daemon: &Daemon,
     params: serde_json::Value,
@@ -1718,6 +1961,10 @@ mod tests {
             },
             frame_pool: std::sync::Arc::new(crate::buffer_pool::BufferPool::new(1, 1024)),
             metrics: std::sync::Arc::new(crate::metrics::ToolMetrics::new()),
+            jobs: std::sync::Arc::new(crate::server::JobTable {
+                next_id: std::sync::atomic::AtomicU64::new(1),
+                jobs: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            }),
         }
     }
 
@@ -2053,5 +2300,84 @@ mod tests {
         assert!(skeleton.content.contains("let a = 1"));
         assert!(skeleton.content.contains("lines elided from fold"));
         assert!(!skeleton.content.contains("let c = 3"));
+    }
+
+    #[test]
+    fn test_git_blame_returns_compact_spans() {
+        let tmp = tempdir().unwrap();
+        let repo_path = tmp.path();
+        let _repo = create_test_repo(repo_path);
+        let daemon = test_daemon(repo_path);
+
+        let result = git_blame(&daemon, serde_json::json!({"path": "file1.txt"})).unwrap();
+        let blame: GitBlameResult = serde_json::from_value(result).unwrap();
+
+        assert_eq!(blame.path, "file1.txt");
+        assert_eq!(blame.spans.len(), 1);
+        assert_eq!(blame.spans[0].summary, "First commit");
+        assert_eq!(blame.spans[0].start_line, 1);
+    }
+
+    #[test]
+    fn test_git_history_returns_file_specific_commits() {
+        let tmp = tempdir().unwrap();
+        let repo_path = tmp.path();
+        let _repo = create_test_repo(repo_path);
+        let daemon = test_daemon(repo_path);
+
+        let result = git_history(
+            &daemon,
+            serde_json::json!({"path": "file2.txt", "max_count": 10}),
+        )
+        .unwrap();
+        let history: GitHistoryResult = serde_json::from_value(result).unwrap();
+
+        assert_eq!(history.path, "file2.txt");
+        assert_eq!(history.commits.len(), 1);
+        assert_eq!(history.commits[0].message, "Second commit");
+    }
+
+    #[test]
+    fn test_background_job_lifecycle() {
+        let tmp = tempdir().unwrap();
+        let daemon = test_daemon(tmp.path());
+
+        let spawned = tool_spawn(
+            &daemon,
+            serde_json::json!({
+                "command": "sh",
+                "args": ["-c", "printf ready; sleep 5"]
+            }),
+        )
+        .unwrap();
+        let spawned: ToolSpawnResult = serde_json::from_value(spawned).unwrap();
+        assert_eq!(spawned.job_id, 1);
+
+        let first: ToolReadLogsResult = loop {
+            let value = tool_read_logs(
+                &daemon,
+                serde_json::json!({"job_id": spawned.job_id, "offset": 0}),
+            )
+            .unwrap();
+            let logs: ToolReadLogsResult = serde_json::from_value(value).unwrap();
+            if logs.output.contains("ready") {
+                break logs;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(first.running);
+
+        let killed = tool_kill(&daemon, serde_json::json!({"job_id": spawned.job_id})).unwrap();
+        let killed: ToolKillResult = serde_json::from_value(killed).unwrap();
+        assert!(killed.killed);
+
+        let after = tool_read_logs(
+            &daemon,
+            serde_json::json!({"job_id": spawned.job_id, "offset": first.next_offset}),
+        )
+        .unwrap();
+        let after: ToolReadLogsResult = serde_json::from_value(after).unwrap();
+        assert!(!after.running);
+        assert!(after.killed);
     }
 }

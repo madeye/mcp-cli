@@ -203,13 +203,20 @@ Leveraging the resident `ParseCache` and tree-sitter to give agents instant arch
   target line or symbol; the daemon returns the file with irrelevant
   declaration bodies folded/elided while preserving surrounding structure.
 
-## M10 - Deep Git & Process Management (pending)
+## M10 - Deep Git & Process Management (done)
 
 Expanding the capabilities of `libgit2` and expanding `tool.run` to handle async workflows.
 
-* **`git.blame` (Compact)** — In-process blame via libgit2. Instead of token-heavy line-by-line output, it groups spans: "Lines 10-50 were modified in commit `abc123` by X (fixes #42)".
-* **`git.history` (File-specific)** — Return the last N commit messages and authors that touched a specific file without flooding context.
-* **`tool.background_job`** — Allow the agent to start a background process (`tool.spawn`), poll its ring-buffered output (`tool.read_logs`), and terminate it (`tool.kill`). The daemon manages the PTY and buffer pool, ensuring the agent doesn't get blocked on watch tasks or dev servers.
+* [x] **`git.blame` (Compact)** — In-process blame via libgit2.
+  Instead of token-heavy line-by-line output, it groups contiguous
+  spans with commit SHA, author, and summary.
+* [x] **`git.history` (File-specific)** — Return the last N commit
+  messages and authors that touched a specific file without flooding
+  context.
+* [x] **`tool.background_job`** — Allow the agent to start a background
+  process (`tool.spawn`), poll captured output (`tool.read_logs`), and
+  terminate it (`tool.kill`) without blocking on watch tasks or dev
+  servers.
 
 ## Integration strategy
 

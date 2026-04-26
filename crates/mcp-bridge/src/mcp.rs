@@ -120,6 +120,8 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
         "git_status" => protocol::methods::GIT_STATUS,
         "git_log" => protocol::methods::GIT_LOG,
         "git_diff" => protocol::methods::GIT_DIFF,
+        "git_blame" => protocol::methods::GIT_BLAME,
+        "git_history" => protocol::methods::GIT_HISTORY,
         "search_grep" => protocol::methods::SEARCH_GREP,
         "code_outline" => protocol::methods::CODE_OUTLINE,
         "code_outline_batch" => protocol::methods::CODE_OUTLINE_BATCH,
@@ -131,6 +133,9 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
         "fs_read_skeleton" => protocol::methods::FS_READ_SKELETON,
         "tool_run" => protocol::methods::TOOL_RUN,
         "tool_gh" => protocol::methods::TOOL_GH,
+        "tool_spawn" => protocol::methods::TOOL_SPAWN,
+        "tool_read_logs" => protocol::methods::TOOL_READ_LOGS,
+        "tool_kill" => protocol::methods::TOOL_KILL,
         "metrics_gain" => protocol::methods::METRICS_GAIN,
         "metrics_tool_latency" => protocol::methods::METRICS_TOOL_LATENCY,
         other => return Err(anyhow::anyhow!("unknown tool: {other}")),
@@ -277,6 +282,31 @@ fn tool_definitions() -> Value {
                     "target": {"type": "string", "description": "Target revision (if omitted, compares base against working tree)."},
                     "path": {"type": "string", "description": "Optional path filter."}
                 }
+            }
+        },
+        {
+            "name": "git_blame",
+            "description": "Return compact libgit2 blame spans for a file, grouped by contiguous commit ownership.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "Optional repo path relative to project root."},
+                    "path": {"type": "string", "description": "File path relative to project root."}
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "git_history",
+            "description": "Return compact commit history for one file without flooding full repository history.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "Optional repo path relative to project root."},
+                    "path": {"type": "string", "description": "File path relative to project root."},
+                    "max_count": {"type": "integer", "minimum": 1, "default": 50}
+                },
+                "required": ["path"]
             }
         },
         {
@@ -445,6 +475,50 @@ fn tool_definitions() -> Value {
                     "fields": {"type": "array", "items": {"type": "string"}, "description": "Optional gh JSON fields. Defaults to compact PR or issue fields."}
                 },
                 "required": ["kind"]
+            }
+        },
+        {
+            "name": "tool_spawn",
+            "description": "Start a background process managed by the daemon. Use tool_read_logs to poll captured stdout/stderr and tool_kill to stop it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "args": {"type": "array", "items": {"type": "string"}, "default": []},
+                    "cwd": {"type": "string", "description": "Optional working directory relative to project root."},
+                    "env": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"name": {"type": "string"}, "value": {"type": "string"}},
+                            "required": ["name", "value"]
+                        },
+                        "default": []
+                    }
+                },
+                "required": ["command"]
+            }
+        },
+        {
+            "name": "tool_read_logs",
+            "description": "Read captured logs for a daemon-managed background job from a byte offset.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "job_id": {"type": "integer", "minimum": 1},
+                    "offset": {"type": "integer", "minimum": 0, "default": 0},
+                    "max_bytes": {"type": "integer", "minimum": 1}
+                },
+                "required": ["job_id"]
+            }
+        },
+        {
+            "name": "tool_kill",
+            "description": "Terminate a daemon-managed background job.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"job_id": {"type": "integer", "minimum": 1}},
+                "required": ["job_id"]
             }
         },
         {
