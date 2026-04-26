@@ -187,13 +187,21 @@ The current roadmap focuses heavily on reads. But agents *write* code, and that'
   it and patching it, the daemon rejects the write before touching the
   file, preventing clobbers of user/concurrent edits.
 
-## M9 - Advanced Structural Tools (pending)
+## M9 - Advanced Structural Tools (done)
 
 Leveraging the resident `ParseCache` and tree-sitter to give agents instant architectural understanding without LSP overhead.
 
-* **`code.imports` / `code.dependencies`** — Tree-sitter query to extract import/use statements. Builds a lightweight, resident, bi-directional dependency graph. Agents can instantly answer "What files import `src/auth.ts`?".
-* **`code.find_occurrences` (Smart Grep)** — Tree-sitter powered search that only matches actual identifiers or function calls, ignoring matches in comments or strings.
-* **`fs.read_skeleton` (Dynamic Folding)** — A hybrid of `fs.read` and `code.outline`. The agent requests a file but specifies a target line or symbol. The daemon returns the file with all irrelevant function bodies dynamically folded/elided (e.g., `// ... 50 lines elided ...`), preserving the file structure but drastically cutting tokens.
+* [x] **`code.imports` / `code.dependencies`** — Extract
+  import/use/include statements and build a lightweight dependency edge
+  view with reverse dependents. Agents can answer "What files import
+  `src/auth.ts`?" without shelling out to broad text scans.
+* [x] **`code.find_occurrences` (Smart Grep)** — Tree-sitter powered
+  search that only matches identifier nodes, ignoring matches in
+  comments or strings.
+* [x] **`fs.read_skeleton` (Dynamic Folding)** — A hybrid of `fs.read`
+  and `code.outline`. The agent requests a file and may specify a
+  target line or symbol; the daemon returns the file with irrelevant
+  declaration bodies folded/elided while preserving surrounding structure.
 
 ## M10 - Deep Git & Process Management (pending)
 

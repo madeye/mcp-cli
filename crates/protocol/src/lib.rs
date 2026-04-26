@@ -53,6 +53,10 @@ pub mod methods {
     pub const CODE_OUTLINE_BATCH: &str = "code.outline_batch";
     pub const CODE_SYMBOLS: &str = "code.symbols";
     pub const CODE_SYMBOLS_BATCH: &str = "code.symbols_batch";
+    pub const CODE_IMPORTS: &str = "code.imports";
+    pub const CODE_DEPENDENCIES: &str = "code.dependencies";
+    pub const CODE_FIND_OCCURRENCES: &str = "code.find_occurrences";
+    pub const FS_READ_SKELETON: &str = "fs.read_skeleton";
     pub const TOOL_RUN: &str = "tool.run";
     pub const TOOL_GH: &str = "tool.gh";
     pub const METRICS_GAIN: &str = "metrics.gain";
@@ -564,6 +568,101 @@ pub struct CodeSymbolsBatchItem {
     pub result: Option<CodeSymbolsResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<RpcError>,
+}
+
+// ---- M9 structural tools -------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeImportsParams {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeImportsResult {
+    pub path: String,
+    pub language: Option<String>,
+    pub imports: Vec<ImportEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportEntry {
+    pub module: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_path: Option<String>,
+    pub line: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CodeDependenciesParams {
+    /// Optional file to focus. When present, `dependencies` are imports
+    /// from this file and `dependents` are files importing it.
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub max_files: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeDependenciesResult {
+    pub files_scanned: usize,
+    pub dependencies: Vec<DependencyEdge>,
+    pub dependents: Vec<DependencyEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DependencyEdge {
+    pub from: String,
+    pub to: String,
+    pub module: String,
+    pub line: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeFindOccurrencesParams {
+    pub identifier: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub max_results: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeFindOccurrencesResult {
+    pub occurrences: Vec<CodeOccurrence>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeOccurrence {
+    pub path: String,
+    pub line: u32,
+    pub column: u32,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsReadSkeletonParams {
+    pub path: String,
+    #[serde(default)]
+    pub target_line: Option<u32>,
+    #[serde(default)]
+    pub target_symbol: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsReadSkeletonResult {
+    pub path: String,
+    pub language: Option<String>,
+    pub content: String,
+    pub elided_regions: Vec<SkeletonElidedRegion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkeletonElidedRegion {
+    pub symbol: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub lines: u32,
 }
 
 // ---- metrics.gain --------------------------------------------------------

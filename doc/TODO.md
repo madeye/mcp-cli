@@ -74,12 +74,12 @@ Concrete, actionable items. Group headers track milestones in
 * [x] `fs.apply_patch` RPC with Optimistic Concurrency Control (OCC).
 * [x] `fs.replace_all` RPC with OCC.
 
-## Advanced Structural Tools (M9) — Pending
+## Advanced Structural Tools (M9) — Done
 
-* [ ] `code.imports` / `code.dependencies` RPC.
-* [ ] Resident bi-directional dependency graph.
-* [ ] `code.find_occurrences` (Smart Grep).
-* [ ] `fs.read_skeleton` (Dynamic folding).
+* [x] `code.imports` / `code.dependencies` RPC.
+* [x] Resident bi-directional dependency graph.
+* [x] `code.find_occurrences` (Smart Grep).
+* [x] `fs.read_skeleton` (Dynamic folding).
 
 ## Deep Git & Process Management (M10) — Pending
 
