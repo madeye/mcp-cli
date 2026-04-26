@@ -160,6 +160,7 @@ fn tool_definitions() -> Value {
                     "path": {"type": "string", "description": "Path relative to project root."},
                     "offset": {"type": "integer", "minimum": 0, "default": 0},
                     "length": {"type": "integer", "minimum": 1, "description": "Bytes to read; default 256 KiB."},
+                    "binary": {"type": "boolean", "default": false, "description": "Return base64 content for binary-safe reads."},
                     "strip_noise": {"type": "boolean", "default": false, "description": "Elide license/base64/generated boilerplate from the returned content. Only applied when offset is 0."}
                 },
                 "required": ["path"]
@@ -179,6 +180,7 @@ fn tool_definitions() -> Value {
                                 "path": {"type": "string"},
                                 "offset": {"type": "integer", "minimum": 0, "default": 0},
                                 "length": {"type": "integer", "minimum": 1},
+                                "binary": {"type": "boolean", "default": false},
                                 "strip_noise": {"type": "boolean", "default": false}
                             },
                             "required": ["path"]

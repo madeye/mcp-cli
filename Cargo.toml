@@ -43,6 +43,9 @@ humantime = "2"
 chrono = "0.4"
 toml_edit = "0.22"
 mimalloc = { version = "0.1", default-features = false }
+bumpalo = "3"
+base64 = "0.22"
+num_cpus = "1"
 criterion = { version = "0.5", features = ["async_tokio"] }
 
 protocol = { path = "crates/protocol" }

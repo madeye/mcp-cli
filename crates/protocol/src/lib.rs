@@ -75,6 +75,11 @@ pub struct FsReadParams {
     pub offset: u64,
     #[serde(default)]
     pub length: Option<u64>,
+    /// When true, return bytes base64-encoded with `encoding: "base64"`.
+    /// This keeps binary-safe reads inside the existing JSON framing
+    /// until a future transport can expose a true raw side-channel.
+    #[serde(default)]
+    pub binary: bool,
     /// When true, the daemon replaces boilerplate regions in `content`
     /// with single-line `[[mcp-cli: stripped …]]` markers. Currently
     /// recognized: leading license-header comments, long base64 blobs,
@@ -97,6 +102,9 @@ pub struct FsReadResult {
     pub bytes_read: u64,
     pub total_size: u64,
     pub content: String,
+    /// `"utf8_lossy"` for text reads and `"base64"` for binary reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
     pub truncated: bool,
     /// Populated when `FsReadParams::strip_noise` is true and the
     /// daemon elided boilerplate sections from `content`. Omitted

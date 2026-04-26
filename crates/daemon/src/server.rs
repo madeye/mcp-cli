@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use bumpalo::Bump;
 use parking_lot::Mutex;
 use protocol::{Request, Response, RpcError};
 use tokio::net::{UnixListener, UnixStream};
@@ -44,6 +45,7 @@ pub struct Daemon {
     pub parse_cache: Arc<ParseCache>,
     pub backends: BackendRegistry,
     pub frame_pool: Arc<BufferPool>,
+    pub arena_pool: Arc<Mutex<Vec<Bump>>>,
     pub metrics: Arc<ToolMetrics>,
     pub jobs: Arc<JobTable>,
 }
@@ -68,9 +70,16 @@ pub struct Config {
     pub parse_cache_capacity: usize,
     pub prewarm_enabled: bool,
     pub idle_timeout: Option<Duration>,
+    pub io_uring_enabled: bool,
 }
 
 pub async fn serve(cfg: Config) -> Result<()> {
+    if cfg.io_uring_enabled {
+        #[cfg(target_os = "linux")]
+        tracing::info!("io_uring mode requested; fs.read remains mmap-backed until raw side-channel transport is active");
+        #[cfg(not(target_os = "linux"))]
+        anyhow::bail!("--io-uring is only supported on Linux");
+    }
     let socket_path = cfg.socket.clone();
     if socket_path.exists() {
         std::fs::remove_file(&socket_path)
@@ -99,6 +108,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
     // count; one entry per in-flight request frame is enough. Buffers
     // beyond FRAME_BUFFER_RECYCLE_CAP are dropped on return.
     let frame_pool = Arc::new(BufferPool::new(32, FRAME_BUFFER_RECYCLE_CAP));
+    let arena_pool = Arc::new(Mutex::new(Vec::with_capacity(32)));
     let metrics = Arc::new(ToolMetrics::new());
     let jobs = Arc::new(JobTable {
         next_id: AtomicU64::new(1),
@@ -112,6 +122,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
         parse_cache,
         backends,
         frame_pool,
+        arena_pool,
         metrics,
         jobs,
     });
@@ -276,9 +287,17 @@ async fn write_response_pooled<W>(daemon: &Daemon, w: &mut W, resp: &Response) -
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
+    let mut arena = daemon.arena_pool.lock().pop().unwrap_or_default();
+    arena.reset();
     let mut buf = daemon.frame_pool.acquire_with_capacity(1024);
     serde_json::to_writer(&mut *buf, resp)?;
-    write_frame(w, &buf).await
+    let result = write_frame(w, &buf).await;
+    arena.reset();
+    let mut pool = daemon.arena_pool.lock();
+    if pool.len() < 32 {
+        pool.push(arena);
+    }
+    result
 }
 
 async fn dispatch(daemon: &Daemon, req: Request) -> Response {
