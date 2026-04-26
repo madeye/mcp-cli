@@ -123,6 +123,8 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
         "code_outline_batch" => protocol::methods::CODE_OUTLINE_BATCH,
         "code_symbols" => protocol::methods::CODE_SYMBOLS,
         "code_symbols_batch" => protocol::methods::CODE_SYMBOLS_BATCH,
+        "tool_run" => protocol::methods::TOOL_RUN,
+        "tool_gh" => protocol::methods::TOOL_GH,
         "metrics_gain" => protocol::methods::METRICS_GAIN,
         "metrics_tool_latency" => protocol::methods::METRICS_TOOL_LATENCY,
         other => return Err(anyhow::anyhow!("unknown tool: {other}")),
@@ -320,6 +322,47 @@ fn tool_definitions() -> Value {
                     }
                 },
                 "required": ["requests"]
+            }
+        },
+        {
+            "name": "tool_run",
+            "description": "Run a local command with argv semantics from the project root or an in-root cwd. Output is capped per stream, failures include a combined stdout/stderr tail, and successful results can be cached until the watched tree version changes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Executable name or absolute path. Use command 'sh' with args ['-lc', '...'] if shell behavior is required."},
+                    "args": {"type": "array", "items": {"type": "string"}, "default": []},
+                    "cwd": {"type": "string", "description": "Optional working directory relative to project root."},
+                    "env": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "value": {"type": "string"}
+                            },
+                            "required": ["name", "value"]
+                        },
+                        "default": []
+                    },
+                    "max_output_bytes": {"type": "integer", "minimum": 1, "default": 65536, "description": "Per-stream output cap; keeps the last N bytes."},
+                    "cache": {"type": "boolean", "default": false, "description": "Cache successful result while the daemon changelog version is unchanged."}
+                },
+                "required": ["command"]
+            }
+        },
+        {
+            "name": "tool_gh",
+            "description": "Compact GitHub CLI adapter for `gh pr view` and `gh issue view`. Returns parsed JSON for the requested PR or issue.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["pr", "issue"]},
+                    "selector": {"type": "string", "description": "Number, URL, or branch accepted by gh view. Omit for gh's contextual default where supported."},
+                    "repo": {"type": "string", "description": "Optional OWNER/REPO override."},
+                    "fields": {"type": "array", "items": {"type": "string"}, "description": "Optional gh JSON fields. Defaults to compact PR or issue fields."}
+                },
+                "required": ["kind"]
             }
         },
         {

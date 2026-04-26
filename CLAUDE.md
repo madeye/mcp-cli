@@ -68,6 +68,16 @@ See `doc/roadmap.md` and `doc/todo.md`. M0 (skeleton), M1 (incremental sync), an
 
 ## PR / merge workflow
 
+User workflow preference: continue roadmap/TODO work one milestone at a
+time; open a PR only after a milestone is complete. For any commit, run
+the full local CI gate first:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
+```
+
 CI is the merge gate **only when the PR contains a source change**. A PR
 that touches nothing under `crates/`, `bench/codex-forkexec/*.{sh,py}`,
 or any build configuration (`Cargo.{toml,lock}`, `rust-toolchain.toml`,

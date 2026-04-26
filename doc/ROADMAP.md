@@ -152,7 +152,7 @@ gracefully.
 * **System integration:** Example `systemd` and `launchd` units
   provided in `doc/services/`.
 
-## M7 - Token-killer compaction layer (partially done)
+## M7 - Token-killer compaction layer (done)
 
 Inspired by [`rtk`](https://github.com/rtk-ai/rtk) — shrinking tool
 responses before they cross the bridge to save context budget.
@@ -170,8 +170,9 @@ responses before they cross the bridge to save context budget.
   byte counts.
 * [x] **`git.log` / `git.diff`**: Specialized compact RPCs for
   git history and patches.
-* [ ] **`tool.run`**: Generic shell-out wrapper with tee-on-failure,
-  truncation, and result caching. (pending)
+* [x] **`tool.run`**: Generic argv-based process wrapper with
+  tee-on-failure, truncation, and result caching.
+* [x] **`tool.gh`**: Compact GitHub CLI adapter for PR and issue views.
 
 
 ## M8 - Write path & Optimistic Concurrency (pending)
