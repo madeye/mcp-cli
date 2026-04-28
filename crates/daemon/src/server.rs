@@ -39,6 +39,7 @@ const _: () = assert!(
 
 pub struct Daemon {
     pub root: PathBuf,
+    pub unrestricted_fs: bool,
     pub changelog: Arc<ChangeLog>,
     pub search_cache: Arc<SearchCache>,
     pub tool_run_cache: Arc<Mutex<HashMap<String, protocol::ToolRunResult>>>,
@@ -48,6 +49,14 @@ pub struct Daemon {
     pub arena_pool: Arc<Mutex<Vec<Bump>>>,
     pub metrics: Arc<ToolMetrics>,
     pub jobs: Arc<JobTable>,
+}
+
+impl Daemon {
+    /// Resolve `candidate` against the daemon root, applying the project-root
+    /// containment check unless the daemon was started with `--unrestricted-fs`.
+    pub fn resolve_path(&self, candidate: &str) -> std::result::Result<PathBuf, RpcError> {
+        resolve_path(&self.root, candidate, !self.unrestricted_fs)
+    }
 }
 
 pub struct JobTable {
@@ -71,6 +80,7 @@ pub struct Config {
     pub prewarm_enabled: bool,
     pub idle_timeout: Option<Duration>,
     pub io_uring_enabled: bool,
+    pub unrestricted_fs: bool,
 }
 
 pub async fn serve(cfg: Config) -> Result<()> {
@@ -116,6 +126,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
     });
     let daemon = Arc::new(Daemon {
         root: cfg.root,
+        unrestricted_fs: cfg.unrestricted_fs,
         changelog,
         search_cache,
         tool_run_cache,
@@ -365,7 +376,16 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
     }
 }
 
+#[cfg(test)]
 pub fn resolve_within(root: &Path, candidate: &str) -> std::result::Result<PathBuf, RpcError> {
+    resolve_path(root, candidate, true)
+}
+
+pub fn resolve_path(
+    root: &Path,
+    candidate: &str,
+    enforce_root: bool,
+) -> std::result::Result<PathBuf, RpcError> {
     let path = Path::new(candidate);
     let joined = if path.is_absolute() {
         path.to_path_buf()
@@ -375,7 +395,7 @@ pub fn resolve_within(root: &Path, candidate: &str) -> std::result::Result<PathB
     let canon = joined
         .canonicalize()
         .map_err(|e| RpcError::new(-32001, format!("canonicalize {candidate}: {e}")))?;
-    if !canon.starts_with(root) {
+    if enforce_root && !canon.starts_with(root) {
         return Err(RpcError::new(
             -32002,
             format!("path escapes root: {}", canon.display()),
@@ -446,6 +466,17 @@ mod tests {
         let err =
             resolve_within(&root, "link").expect_err("symlink escaping root must be rejected");
         assert_eq!(err.code, -32002);
+    }
+
+    #[test]
+    fn unrestricted_mode_allows_paths_outside_root() {
+        let (_tmp, root) = setup();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().canonicalize().unwrap().join("a.txt");
+        fs::write(&outside_file, b"hi").unwrap();
+        let resolved = resolve_path(&root, outside_file.to_str().unwrap(), false)
+            .expect("unrestricted should accept absolute path outside root");
+        assert_eq!(resolved, outside_file);
     }
 
     #[test]
