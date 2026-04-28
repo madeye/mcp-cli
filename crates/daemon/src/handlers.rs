@@ -949,6 +949,7 @@ pub fn search_grep(
     // time. Any file change landing after this will bump the version and
     // invalidate the entry on next access.
     let (version, _) = daemon.changelog.snapshot();
+    let cacheable = search_root.starts_with(&daemon.root);
     let context_lines = params.context.min(SEARCH_CONTEXT_CAP);
     let cache_key = SearchKey {
         pattern: params.pattern.clone(),
@@ -958,9 +959,11 @@ pub fn search_grep(
         case_insensitive: params.case_insensitive,
         context: context_lines,
     };
-    if let Some(cached) = daemon.search_cache.get(version, &cache_key) {
-        // Cache stores the raw form; compact on the way out if asked.
-        return Ok(finalize_search(daemon, cached, params.compact));
+    if cacheable {
+        if let Some(cached) = daemon.search_cache.get(version, &cache_key) {
+            // Cache stores the raw form; compact on the way out if asked.
+            return Ok(finalize_search(daemon, cached, params.compact));
+        }
     }
 
     let matcher = RegexMatcherBuilder::new()
@@ -1023,7 +1026,9 @@ pub fn search_grep(
         truncated,
         compact: None,
     };
-    daemon.search_cache.insert(version, cache_key, raw.clone());
+    if cacheable {
+        daemon.search_cache.insert(version, cache_key, raw.clone());
+    }
     Ok(finalize_search(daemon, raw, params.compact))
 }
 
@@ -1177,7 +1182,15 @@ fn code_imports_inner(daemon: &Daemon, path: &str) -> Result<CodeImportsResult, 
         fs::read_to_string(&abs).map_err(|e| RpcError::new(-32080, format!("read: {e}")))?;
     let base_dir = abs.parent().unwrap_or(&daemon.root);
     let imports = language
-        .map(|lang| extract_imports(lang, &content, base_dir, &daemon.root))
+        .map(|lang| {
+            extract_imports(
+                lang,
+                &content,
+                base_dir,
+                &daemon.root,
+                daemon.unrestricted_fs,
+            )
+        })
         .unwrap_or_default();
     Ok(CodeImportsResult {
         path: path.to_string(),
@@ -1191,8 +1204,19 @@ fn extract_imports(
     content: &str,
     base_dir: &Path,
     root: &Path,
+    allow_absolute: bool,
 ) -> Vec<ImportEntry> {
     let mut imports = Vec::new();
+    let mut add_import = |module: &str, line| {
+        imports.push(import_entry(
+            module,
+            line,
+            base_dir,
+            root,
+            lang,
+            allow_absolute,
+        ));
+    };
     let mut go_block = false;
     for (idx, raw_line) in content.lines().enumerate() {
         let line_no = idx as u32 + 1;
@@ -1207,22 +1231,22 @@ fn extract_imports(
                             .and_then(|s| s.trim_end_matches(';').split_whitespace().next())
                     })
                 {
-                    imports.push(import_entry(module, line_no, base_dir, root, lang));
+                    add_import(module, line_no);
                 } else if let Some(module) = line
                     .strip_prefix("mod ")
                     .and_then(|s| s.trim_end_matches(';').split_whitespace().next())
                 {
-                    imports.push(import_entry(module, line_no, base_dir, root, lang));
+                    add_import(module, line_no);
                 }
             }
             Language::Python => {
                 if let Some(rest) = line.strip_prefix("import ") {
                     for module in rest.split(',').filter_map(|s| s.split_whitespace().next()) {
-                        imports.push(import_entry(module, line_no, base_dir, root, lang));
+                        add_import(module, line_no);
                     }
                 } else if let Some(rest) = line.strip_prefix("from ") {
                     if let Some(module) = rest.split_whitespace().next() {
-                        imports.push(import_entry(module, line_no, base_dir, root, lang));
+                        add_import(module, line_no);
                     }
                 }
             }
@@ -1232,7 +1256,7 @@ fn extract_imports(
                         || line.starts_with("export ")
                         || line.contains(" require(")
                     {
-                        imports.push(import_entry(&module, line_no, base_dir, root, lang));
+                        add_import(&module, line_no);
                     }
                 }
             }
@@ -1247,13 +1271,13 @@ fn extract_imports(
                 }
                 if let Some(module) = quoted_module(line.strip_prefix("import ").unwrap_or(line)) {
                     if go_block || line.starts_with("import ") {
-                        imports.push(import_entry(&module, line_no, base_dir, root, lang));
+                        add_import(&module, line_no);
                     }
                 }
             }
             Language::C | Language::Cpp => {
                 if let Some(module) = line.strip_prefix("#include").and_then(quoted_module) {
-                    imports.push(import_entry(&module, line_no, base_dir, root, lang));
+                    add_import(&module, line_no);
                 }
             }
         }
@@ -1275,10 +1299,11 @@ fn import_entry(
     base_dir: &Path,
     root: &Path,
     lang: Language,
+    allow_absolute: bool,
 ) -> ImportEntry {
     ImportEntry {
         module: module.to_string(),
-        resolved_path: resolve_import_path(module, base_dir, root, lang),
+        resolved_path: resolve_import_path(module, base_dir, root, lang, allow_absolute),
         line,
     }
 }
@@ -1288,6 +1313,7 @@ fn resolve_import_path(
     base_dir: &Path,
     root: &Path,
     lang: Language,
+    allow_absolute: bool,
 ) -> Option<String> {
     let candidates: Vec<PathBuf> = match lang {
         Language::TypeScript | Language::Tsx if module.starts_with('.') => {
@@ -1321,10 +1347,10 @@ fn resolve_import_path(
         .into_iter()
         .find(|p| p.exists())
         .and_then(|p| p.canonicalize().ok())
-        .and_then(|p| {
-            p.strip_prefix(root)
-                .ok()
-                .map(|r| r.to_string_lossy().to_string())
+        .and_then(|p| match p.strip_prefix(root) {
+            Ok(rel) => Some(rel.to_string_lossy().to_string()),
+            Err(_) if allow_absolute => Some(p.to_string_lossy().to_string()),
+            Err(_) => None,
         })
 }
 
@@ -2064,6 +2090,45 @@ mod tests {
         }
     }
 
+    fn test_unrestricted_daemon(root: &std::path::Path) -> Daemon {
+        Daemon {
+            unrestricted_fs: true,
+            ..test_daemon(root)
+        }
+    }
+
+    #[test]
+    fn test_unrestricted_search_grep_outside_root_is_not_cached() {
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let outside_file = outside.path().join("a.txt");
+        fs::write(&outside_file, "old\n").unwrap();
+        let daemon = test_unrestricted_daemon(root.path());
+
+        let first = search_grep(
+            &daemon,
+            serde_json::json!({
+                "pattern": "old|new",
+                "path": outside.path().to_str().unwrap()
+            }),
+        )
+        .unwrap();
+        let first: SearchGrepResult = serde_json::from_value(first).unwrap();
+        assert_eq!(first.hits[0].line, "old");
+
+        fs::write(&outside_file, "new\n").unwrap();
+        let second = search_grep(
+            &daemon,
+            serde_json::json!({
+                "pattern": "old|new",
+                "path": outside.path().to_str().unwrap()
+            }),
+        )
+        .unwrap();
+        let second: SearchGrepResult = serde_json::from_value(second).unwrap();
+        assert_eq!(second.hits[0].line, "new");
+    }
+
     #[test]
     fn test_git_log_basic() {
         let tmp = tempdir().unwrap();
@@ -2410,6 +2475,34 @@ mod tests {
         assert_eq!(
             imports.imports[0].resolved_path.as_deref(),
             Some("src/auth.ts")
+        );
+    }
+
+    #[test]
+    fn test_code_imports_resolves_unrestricted_path_outside_root() {
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("auth.ts"), "export const token = 1;\n").unwrap();
+        fs::write(
+            outside.path().join("app.ts"),
+            "import { token } from './auth';\nconsole.log(token);\n",
+        )
+        .unwrap();
+        let daemon = test_unrestricted_daemon(root.path());
+
+        let result = code_imports(
+            &daemon,
+            serde_json::json!({"path": outside.path().join("app.ts").to_str().unwrap()}),
+        )
+        .unwrap();
+        let imports: CodeImportsResult = serde_json::from_value(result).unwrap();
+
+        let auth = outside.path().join("auth.ts").canonicalize().unwrap();
+        assert_eq!(imports.imports.len(), 1);
+        assert_eq!(imports.imports[0].module, "./auth");
+        assert_eq!(
+            imports.imports[0].resolved_path.as_deref(),
+            Some(auth.to_str().unwrap())
         );
     }
 
