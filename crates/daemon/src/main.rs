@@ -81,6 +81,15 @@ struct Args {
     /// Size the Tokio runtime explicitly to one worker per logical CPU.
     #[arg(long, default_value_t = true)]
     thread_per_core: bool,
+
+    /// Allow fs / git / search / code / shell tools to access paths
+    /// outside the project root. By default the daemon rejects any path
+    /// that canonicalises outside `--root`; with this flag set, the
+    /// containment check is skipped and absolute paths anywhere on the
+    /// host filesystem are accepted. Use with care — anything the
+    /// daemon's user can read or write becomes reachable through MCP.
+    #[arg(long, default_value_t = false)]
+    unrestricted_fs: bool,
 }
 
 fn main() -> Result<()> {
@@ -129,6 +138,7 @@ async fn run(args: Args, worker_threads: usize) -> Result<()> {
         idle_timeout = ?idle_timeout,
         io_uring = args.io_uring,
         worker_threads,
+        unrestricted_fs = args.unrestricted_fs,
         "starting daemon",
     );
     server::serve(server::Config {
@@ -140,6 +150,7 @@ async fn run(args: Args, worker_threads: usize) -> Result<()> {
         prewarm_enabled: !args.no_prewarm,
         idle_timeout,
         io_uring_enabled: args.io_uring,
+        unrestricted_fs: args.unrestricted_fs,
     })
     .await
 }

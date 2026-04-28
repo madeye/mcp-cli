@@ -30,7 +30,7 @@ use protocol::{
 use crate::compact;
 use crate::languages::Language;
 use crate::search_cache::SearchKey;
-use crate::server::{resolve_within, BackgroundJob, Daemon};
+use crate::server::{BackgroundJob, Daemon};
 
 /// How many directory rows we keep per status class in compact mode
 /// before collapsing the rest into a synthetic `(other)` row. Picked
@@ -97,7 +97,7 @@ pub fn fs_read_batch(
 /// params (no JSON round-trip per batch item) and returns the
 /// structured result; callers JSON-encode at their own layer.
 fn fs_read_inner(daemon: &Daemon, params: &FsReadParams) -> Result<FsReadResult, RpcError> {
-    let path = resolve_within(&daemon.root, &params.path)?;
+    let path = daemon.resolve_path(&params.path)?;
 
     let file = File::open(&path).map_err(|e| RpcError::new(-32010, format!("open: {e}")))?;
     let metadata = file
@@ -216,7 +216,7 @@ pub fn fs_apply_patch(
 ) -> Result<serde_json::Value, RpcError> {
     let params: FsApplyPatchParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
-    let path = resolve_within(&daemon.root, &params.path)?;
+    let path = daemon.resolve_path(&params.path)?;
     check_write_preconditions(
         daemon,
         &path,
@@ -249,7 +249,7 @@ pub fn fs_replace_all(
     if params.search.is_empty() {
         return Err(RpcError::new(-32602, "search must not be empty"));
     }
-    let path = resolve_within(&daemon.root, &params.path)?;
+    let path = daemon.resolve_path(&params.path)?;
     check_write_preconditions(
         daemon,
         &path,
@@ -430,7 +430,7 @@ pub fn fs_scan(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json:
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
 
     let scan_root = match &params.path {
-        Some(p) => resolve_within(&daemon.root, p)?,
+        Some(p) => daemon.resolve_path(p)?,
         None => daemon.root.clone(),
     };
 
@@ -487,7 +487,7 @@ pub fn git_status(
     let params: GitStatusParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let repo_root = match params.repo {
-        Some(r) => resolve_within(&daemon.root, &r)?,
+        Some(r) => daemon.resolve_path(&r)?,
         None => daemon.root.clone(),
     };
 
@@ -550,7 +550,7 @@ pub fn git_log(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json:
     let params: GitLogParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let repo_root = match params.repo {
-        Some(r) => resolve_within(&daemon.root, &r)?,
+        Some(r) => daemon.resolve_path(&r)?,
         None => daemon.root.clone(),
     };
 
@@ -661,7 +661,7 @@ pub fn git_diff(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json
     let params: GitDiffParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let repo_root = match params.repo {
-        Some(r) => resolve_within(&daemon.root, &r)?,
+        Some(r) => daemon.resolve_path(&r)?,
         None => daemon.root.clone(),
     };
 
@@ -731,13 +731,13 @@ pub fn git_blame(
     let params: GitBlameParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let repo_root = match params.repo {
-        Some(r) => resolve_within(&daemon.root, &r)?,
+        Some(r) => daemon.resolve_path(&r)?,
         None => daemon.root.clone(),
     };
     let repo = git2::Repository::discover(&repo_root)
         .map_err(|e| RpcError::new(-32020, format!("discover repo: {e}")))?;
     let workdir = repo.workdir().unwrap_or(&repo_root);
-    let abs_path = resolve_within(&daemon.root, &params.path)?;
+    let abs_path = daemon.resolve_path(&params.path)?;
     let repo_path = abs_path
         .strip_prefix(workdir)
         .map_err(|_| RpcError::new(-32049, "path is outside repository workdir"))?;
@@ -869,7 +869,7 @@ pub fn search_grep(
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
 
     let search_root = match &params.path {
-        Some(p) => resolve_within(&daemon.root, p)?,
+        Some(p) => daemon.resolve_path(p)?,
         None => daemon.root.clone(),
     };
 
@@ -1023,7 +1023,7 @@ fn code_outline_inner(
     daemon: &Daemon,
     params: &CodeOutlineParams,
 ) -> Result<CodeOutlineResult, RpcError> {
-    let path = resolve_within(&daemon.root, &params.path)?;
+    let path = daemon.resolve_path(&params.path)?;
     let (language, entries) = match daemon.backends.outline(&path, params.signatures_only)? {
         Some(r) => (Some(r.language.name().to_string()), r.entries),
         None => (None, Vec::new()),
@@ -1076,7 +1076,7 @@ fn code_symbols_inner(
     daemon: &Daemon,
     params: &CodeSymbolsParams,
 ) -> Result<CodeSymbolsResult, RpcError> {
-    let path = resolve_within(&daemon.root, &params.path)?;
+    let path = daemon.resolve_path(&params.path)?;
     let (language, names) = match daemon.backends.symbols(&path)? {
         Some(r) => (Some(r.language.name().to_string()), r.names),
         None => (None, Vec::new()),
@@ -1099,7 +1099,7 @@ pub fn code_imports(
 }
 
 fn code_imports_inner(daemon: &Daemon, path: &str) -> Result<CodeImportsResult, RpcError> {
-    let abs = resolve_within(&daemon.root, path)?;
+    let abs = daemon.resolve_path(path)?;
     let language = Language::detect(&abs);
     let content =
         fs::read_to_string(&abs).map_err(|e| RpcError::new(-32080, format!("read: {e}")))?;
@@ -1316,7 +1316,7 @@ pub fn code_find_occurrences(
     let mut occurrences = Vec::new();
     let mut truncated = false;
     for rel in files {
-        let abs = resolve_within(&daemon.root, &rel)?;
+        let abs = daemon.resolve_path(&rel)?;
         let Some(parsed) = daemon
             .parse_cache
             .get_or_parse(&abs)
@@ -1396,7 +1396,7 @@ pub fn fs_read_skeleton(
             signatures_only: true,
         },
     )?;
-    let abs = resolve_within(&daemon.root, &params.path)?;
+    let abs = daemon.resolve_path(&params.path)?;
     let content =
         fs::read_to_string(&abs).map_err(|e| RpcError::new(-32080, format!("read: {e}")))?;
     let mut lines: Vec<String> = content.lines().map(|l| format!("{l}\n")).collect();
@@ -1486,7 +1486,7 @@ pub fn tool_run(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json
 
 fn tool_run_inner(daemon: &Daemon, params: &ToolRunParams) -> Result<ToolRunResult, RpcError> {
     let cwd = match &params.cwd {
-        Some(cwd) => resolve_within(&daemon.root, cwd)?,
+        Some(cwd) => daemon.resolve_path(cwd)?,
         None => daemon.root.clone(),
     };
     let cwd_display = cwd
@@ -1660,7 +1660,7 @@ pub fn tool_spawn(
         return Err(RpcError::new(-32602, "command must not be empty"));
     }
     let cwd = match &params.cwd {
-        Some(cwd) => resolve_within(&daemon.root, cwd)?,
+        Some(cwd) => daemon.resolve_path(cwd)?,
         None => daemon.root.clone(),
     };
     let mut child = Command::new(&params.command)
@@ -1968,6 +1968,7 @@ mod tests {
         let parse_cache = std::sync::Arc::new(crate::parse_cache::ParseCache::new(10));
         Daemon {
             root: root.canonicalize().unwrap(),
+            unrestricted_fs: false,
             changelog: std::sync::Arc::new(crate::changelog::ChangeLog::with_capacity(10)),
             search_cache: std::sync::Arc::new(crate::search_cache::SearchCache::new(10)),
             tool_run_cache: std::sync::Arc::new(parking_lot::Mutex::new(
