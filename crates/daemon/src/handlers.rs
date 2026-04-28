@@ -341,10 +341,25 @@ fn apply_unified_patch(original: &str, patch: &str) -> Result<String, RpcError> 
     let mut output = String::with_capacity(original.len() + patch.len());
     let mut original_idx = 0usize;
     let mut patch_idx = 0usize;
+    let mut hunk_index = 0usize;
     let mut saw_hunk = false;
 
     while patch_idx < patch_lines.len() {
         let line = patch_lines[patch_idx];
+        // A line that opens with "@@" but isn't a valid "@@ -A,B +C,D @@" header
+        // is almost always a caller bug (e.g. line numbers stripped). Surface it
+        // explicitly instead of silently treating it as noise and later failing
+        // with the misleading "patch contains no hunks".
+        if line.starts_with("@@") && !line.starts_with("@@ ") {
+            return Err(RpcError::new(
+                -32084,
+                format!(
+                    "malformed hunk header at patch line {}: expected `@@ -A,B +C,D @@`, got {:?}",
+                    patch_idx + 1,
+                    line.trim_end_matches('\n'),
+                ),
+            ));
+        }
         if !line.starts_with("@@ ") {
             patch_idx += 1;
             continue;
@@ -353,7 +368,15 @@ fn apply_unified_patch(original: &str, patch: &str) -> Result<String, RpcError> 
         let (old_start, _) = parse_hunk_header(line)?;
         let hunk_start = old_start.saturating_sub(1);
         if hunk_start < original_idx || hunk_start > original_lines.len() {
-            return Err(RpcError::new(-32084, "patch hunk starts outside file"));
+            return Err(RpcError::new(
+                -32084,
+                format!(
+                    "hunk #{} starts outside file: header points at line {} but cursor is at line {}",
+                    hunk_index + 1,
+                    old_start,
+                    original_idx + 1,
+                ),
+            ));
         }
         for line in &original_lines[original_idx..hunk_start] {
             output.push_str(line);
@@ -361,6 +384,7 @@ fn apply_unified_patch(original: &str, patch: &str) -> Result<String, RpcError> 
         original_idx = hunk_start;
         patch_idx += 1;
 
+        let mut hunk_body_offset = 0usize;
         while patch_idx < patch_lines.len() && !patch_lines[patch_idx].starts_with("@@ ") {
             let hunk_line = patch_lines[patch_idx];
             if hunk_line.starts_with("--- ") || hunk_line.starts_with("+++ ") {
@@ -374,28 +398,76 @@ fn apply_unified_patch(original: &str, patch: &str) -> Result<String, RpcError> 
             match tag {
                 " " => {
                     let current = original_lines.get(original_idx).ok_or_else(|| {
-                        RpcError::new(-32084, "patch context extends beyond file")
+                        RpcError::new(
+                            -32084,
+                            format!(
+                                "hunk #{} context extends beyond file at body line {} (file line {})",
+                                hunk_index + 1,
+                                hunk_body_offset + 1,
+                                original_idx + 1,
+                            ),
+                        )
                     })?;
                     if *current != content {
-                        return Err(RpcError::new(-32084, "patch context mismatch"));
+                        return Err(RpcError::new(
+                            -32084,
+                            format!(
+                                "hunk #{} context mismatch at body line {} (file line {}):\n  expected: {:?}\n  actual:   {:?}",
+                                hunk_index + 1,
+                                hunk_body_offset + 1,
+                                original_idx + 1,
+                                content.trim_end_matches('\n'),
+                                current.trim_end_matches('\n'),
+                            ),
+                        ));
                     }
                     output.push_str(current);
                     original_idx += 1;
                 }
                 "-" => {
                     let current = original_lines.get(original_idx).ok_or_else(|| {
-                        RpcError::new(-32084, "patch removal extends beyond file")
+                        RpcError::new(
+                            -32084,
+                            format!(
+                                "hunk #{} removal extends beyond file at body line {} (file line {})",
+                                hunk_index + 1,
+                                hunk_body_offset + 1,
+                                original_idx + 1,
+                            ),
+                        )
                     })?;
                     if *current != content {
-                        return Err(RpcError::new(-32084, "patch removal mismatch"));
+                        return Err(RpcError::new(
+                            -32084,
+                            format!(
+                                "hunk #{} removal mismatch at body line {} (file line {}):\n  expected: {:?}\n  actual:   {:?}",
+                                hunk_index + 1,
+                                hunk_body_offset + 1,
+                                original_idx + 1,
+                                content.trim_end_matches('\n'),
+                                current.trim_end_matches('\n'),
+                            ),
+                        ));
                     }
                     original_idx += 1;
                 }
                 "+" => output.push_str(content),
-                _ => return Err(RpcError::new(-32084, "invalid patch hunk line")),
+                _ => {
+                    return Err(RpcError::new(
+                        -32084,
+                        format!(
+                            "hunk #{} invalid line at body line {}: {:?}",
+                            hunk_index + 1,
+                            hunk_body_offset + 1,
+                            hunk_line.trim_end_matches('\n'),
+                        ),
+                    ))
+                }
             }
+            hunk_body_offset += 1;
             patch_idx += 1;
         }
+        hunk_index += 1;
     }
 
     if !saw_hunk {
@@ -2246,9 +2318,71 @@ mod tests {
         .expect_err("mismatched patch should fail");
 
         assert_eq!(err.code, -32084);
+        assert!(
+            err.message.contains("hunk #1")
+                && err.message.contains("expected:")
+                && err.message.contains("actual:"),
+            "expected diagnostic with hunk index and expected/actual, got {:?}",
+            err.message
+        );
         assert_eq!(
             fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
             "one\ntwo\nthree\n"
+        );
+    }
+
+    #[test]
+    fn test_fs_apply_patch_rejects_malformed_hunk_header() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let daemon = test_daemon(tmp.path());
+        let patch = "@@\n-two\n+TWO\n";
+
+        let err = fs_apply_patch(
+            &daemon,
+            serde_json::json!({"path": "a.txt", "patch": patch}),
+        )
+        .expect_err("malformed hunk header should fail");
+
+        assert_eq!(err.code, -32084);
+        assert!(
+            err.message.contains("malformed hunk header"),
+            "expected malformed-header diagnostic, got {:?}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_fs_apply_patch_already_applied_reports_context_mismatch_with_diff() {
+        // Repro of the user-reported flow: applying the same patch twice. The
+        // second call must surface enough context to make the cause obvious.
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let daemon = test_daemon(tmp.path());
+        let patch = "\
+@@ -1,3 +1,3 @@
+ one
+-two
++TWO
+ three
+";
+        fs_apply_patch(
+            &daemon,
+            serde_json::json!({"path": "a.txt", "patch": patch}),
+        )
+        .expect("first apply should succeed");
+
+        let err = fs_apply_patch(
+            &daemon,
+            serde_json::json!({"path": "a.txt", "patch": patch}),
+        )
+        .expect_err("second apply should fail");
+
+        assert_eq!(err.code, -32084);
+        assert!(
+            err.message.contains("\"two\"") && err.message.contains("\"TWO\""),
+            "expected diagnostic to include both expected and actual line content, got {:?}",
+            err.message
         );
     }
 
