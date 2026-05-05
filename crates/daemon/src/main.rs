@@ -8,6 +8,7 @@ mod languages;
 mod metrics;
 mod outline;
 mod parse_cache;
+mod pipe;
 mod prewarm;
 mod search_cache;
 mod server;

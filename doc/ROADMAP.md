@@ -255,6 +255,11 @@ surface into something easier to maintain, validate, and release.
   process additions; update headline numbers and result notes.
 * [ ] **Release hygiene.** Add changelog/release notes and tag a
   versioned release once documentation and benchmark updates land.
+* [x] **`pipe` RPC.** Compose multiple daemon RPCs into one MCP
+  round-trip with reference forwarding (`{"$ref": "$N.<jsonpath>"}`)
+  and bounded-concurrency `for_each` fan-out. Closes the "I don't know
+  the paths until I scan" gap that batch handlers can't reach without
+  burning a model turn between scan and read.
 
 ## Integration strategy
 

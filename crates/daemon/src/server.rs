@@ -271,7 +271,7 @@ async fn handle_conn(mut stream: UnixStream, daemon: Arc<Daemon>) -> Result<()> 
             }
         };
 
-        let resp = dispatch(&daemon, req).await;
+        let resp = dispatch(Arc::clone(&daemon), req).await;
         write_response_pooled(&daemon, &mut write_half, &resp).await?;
     }
 }
@@ -300,7 +300,7 @@ where
     result
 }
 
-async fn dispatch(daemon: &Daemon, req: Request) -> Response {
+async fn dispatch(daemon: Arc<Daemon>, req: Request) -> Response {
     let id = req.id;
     let method = req.method.clone();
     // Time every dispatch (including errors and unknown methods) so a
@@ -309,43 +309,14 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
     // hazard since `record_latency` doesn't touch the dispatch path.
     let start = std::time::Instant::now();
 
-    let result = match method.as_str() {
-        protocol::methods::PING => {
-            Ok(serde_json::json!({"ok": true, "version": protocol::PROTOCOL_VERSION}))
-        }
-        protocol::methods::FS_READ => handlers::fs_read(daemon, req.params),
-        protocol::methods::FS_READ_BATCH => handlers::fs_read_batch(daemon, req.params),
-        protocol::methods::FS_APPLY_PATCH => handlers::fs_apply_patch(daemon, req.params),
-        protocol::methods::FS_REPLACE_ALL => handlers::fs_replace_all(daemon, req.params),
-        protocol::methods::FS_SNAPSHOT => handlers::fs_snapshot(daemon, req.params),
-        protocol::methods::FS_CHANGES => handlers::fs_changes(daemon, req.params),
-        protocol::methods::FS_SCAN => handlers::fs_scan(daemon, req.params),
-        protocol::methods::GIT_STATUS => handlers::git_status(daemon, req.params),
-        protocol::methods::GIT_LOG => handlers::git_log(daemon, req.params),
-        protocol::methods::GIT_DIFF => handlers::git_diff(daemon, req.params),
-        protocol::methods::GIT_BLAME => handlers::git_blame(daemon, req.params),
-        protocol::methods::GIT_HISTORY => handlers::git_history(daemon, req.params),
-        protocol::methods::SEARCH_GREP => handlers::search_grep(daemon, req.params),
-        protocol::methods::CODE_OUTLINE => handlers::code_outline(daemon, req.params),
-        protocol::methods::CODE_OUTLINE_BATCH => handlers::code_outline_batch(daemon, req.params),
-        protocol::methods::CODE_SYMBOLS => handlers::code_symbols(daemon, req.params),
-        protocol::methods::CODE_SYMBOLS_BATCH => handlers::code_symbols_batch(daemon, req.params),
-        protocol::methods::CODE_IMPORTS => handlers::code_imports(daemon, req.params),
-        protocol::methods::CODE_DEPENDENCIES => handlers::code_dependencies(daemon, req.params),
-        protocol::methods::CODE_FIND_OCCURRENCES => {
-            handlers::code_find_occurrences(daemon, req.params)
-        }
-        protocol::methods::FS_READ_SKELETON => handlers::fs_read_skeleton(daemon, req.params),
-        protocol::methods::TOOL_RUN => handlers::tool_run(daemon, req.params),
-        protocol::methods::TOOL_GH => handlers::tool_gh(daemon, req.params),
-        protocol::methods::TOOL_SPAWN => handlers::tool_spawn(daemon, req.params),
-        protocol::methods::TOOL_READ_LOGS => handlers::tool_read_logs(daemon, req.params),
-        protocol::methods::TOOL_KILL => handlers::tool_kill(daemon, req.params),
-        protocol::methods::METRICS_GAIN => handlers::metrics_gain(daemon, req.params),
-        protocol::methods::METRICS_TOOL_LATENCY => {
-            handlers::metrics_tool_latency(daemon, req.params)
-        }
-        other => Err(RpcError::new(-32601, format!("unknown method: {other}"))),
+    // `pipe` is the only async-dispatched method (it fans out work onto
+    // the blocking pool); everything else is sync and goes through
+    // `dispatch_method`, which is also re-entered from inside `pipe`
+    // for each composed step.
+    let result = if method == protocol::methods::PIPE {
+        crate::pipe::pipe(Arc::clone(&daemon), req.params).await
+    } else {
+        dispatch_method(&daemon, &method, req.params)
     };
 
     let elapsed_us = start.elapsed().as_micros() as u64;
@@ -362,6 +333,54 @@ async fn dispatch(daemon: &Daemon, req: Request) -> Response {
             result: None,
             error: Some(err),
         },
+    }
+}
+
+/// Sync dispatch for every non-`pipe` method. Re-used by `handlers::pipe`
+/// for each composed step. Returns an `unknown method` error for `pipe`
+/// itself — nested pipes are intentionally unsupported.
+pub(crate) fn dispatch_method(
+    daemon: &Daemon,
+    method: &str,
+    params: serde_json::Value,
+) -> std::result::Result<serde_json::Value, RpcError> {
+    match method {
+        protocol::methods::PING => {
+            Ok(serde_json::json!({"ok": true, "version": protocol::PROTOCOL_VERSION}))
+        }
+        protocol::methods::FS_READ => handlers::fs_read(daemon, params),
+        protocol::methods::FS_READ_BATCH => handlers::fs_read_batch(daemon, params),
+        protocol::methods::FS_APPLY_PATCH => handlers::fs_apply_patch(daemon, params),
+        protocol::methods::FS_REPLACE_ALL => handlers::fs_replace_all(daemon, params),
+        protocol::methods::FS_SNAPSHOT => handlers::fs_snapshot(daemon, params),
+        protocol::methods::FS_CHANGES => handlers::fs_changes(daemon, params),
+        protocol::methods::FS_SCAN => handlers::fs_scan(daemon, params),
+        protocol::methods::GIT_STATUS => handlers::git_status(daemon, params),
+        protocol::methods::GIT_LOG => handlers::git_log(daemon, params),
+        protocol::methods::GIT_DIFF => handlers::git_diff(daemon, params),
+        protocol::methods::GIT_BLAME => handlers::git_blame(daemon, params),
+        protocol::methods::GIT_HISTORY => handlers::git_history(daemon, params),
+        protocol::methods::SEARCH_GREP => handlers::search_grep(daemon, params),
+        protocol::methods::CODE_OUTLINE => handlers::code_outline(daemon, params),
+        protocol::methods::CODE_OUTLINE_BATCH => handlers::code_outline_batch(daemon, params),
+        protocol::methods::CODE_SYMBOLS => handlers::code_symbols(daemon, params),
+        protocol::methods::CODE_SYMBOLS_BATCH => handlers::code_symbols_batch(daemon, params),
+        protocol::methods::CODE_IMPORTS => handlers::code_imports(daemon, params),
+        protocol::methods::CODE_DEPENDENCIES => handlers::code_dependencies(daemon, params),
+        protocol::methods::CODE_FIND_OCCURRENCES => handlers::code_find_occurrences(daemon, params),
+        protocol::methods::FS_READ_SKELETON => handlers::fs_read_skeleton(daemon, params),
+        protocol::methods::TOOL_RUN => handlers::tool_run(daemon, params),
+        protocol::methods::TOOL_GH => handlers::tool_gh(daemon, params),
+        protocol::methods::TOOL_SPAWN => handlers::tool_spawn(daemon, params),
+        protocol::methods::TOOL_READ_LOGS => handlers::tool_read_logs(daemon, params),
+        protocol::methods::TOOL_KILL => handlers::tool_kill(daemon, params),
+        protocol::methods::METRICS_GAIN => handlers::metrics_gain(daemon, params),
+        protocol::methods::METRICS_TOOL_LATENCY => handlers::metrics_tool_latency(daemon, params),
+        protocol::methods::PIPE => Err(RpcError::new(
+            -32601,
+            "nested pipe not supported; flatten composition at the caller",
+        )),
+        other => Err(RpcError::new(-32601, format!("unknown method: {other}"))),
     }
 }
 

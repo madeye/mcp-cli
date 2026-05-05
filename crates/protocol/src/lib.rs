@@ -66,6 +66,7 @@ pub mod methods {
     pub const TOOL_KILL: &str = "tool.kill";
     pub const METRICS_GAIN: &str = "metrics.gain";
     pub const METRICS_TOOL_LATENCY: &str = "metrics.tool_latency";
+    pub const PIPE: &str = "pipe";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -902,4 +903,79 @@ pub struct ToolKillResult {
     pub job_id: u64,
     pub killed: bool,
     pub exit_code: Option<i32>,
+}
+
+// ---- pipe ---------------------------------------------------------------
+
+/// Compose multiple RPCs into one round-trip with reference forwarding.
+///
+/// `steps` execute sequentially. Each step's `params` may contain
+/// `{"$ref": "$N.<jsonpath>"}` markers that are substituted with values
+/// from a prior step's `result` before dispatch. A step may also set
+/// `for_each: "$N.<jsonpath>"` to fan out — the JSONPath must resolve to
+/// an array of values, and the step runs once per element with `$item`
+/// bound to that element (referenced as `{"$ref": "$item"}` or
+/// `{"$ref": "$item.<jsonpath>"}` inside the step's params).
+///
+/// JSONPath dialect is RFC 9535 (serde_json_path). A non-`for_each`
+/// `$ref` that resolves to zero or more-than-one nodes is an error;
+/// use `for_each` for cardinality > 1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipeParams {
+    pub steps: Vec<PipeStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipeStep {
+    /// Daemon RPC method name (e.g. `fs.read`, `search.grep`). Nested
+    /// `pipe` is rejected — keep composition explicit at the caller.
+    pub method: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+    /// JSONPath expression evaluated against prior step results
+    /// (`$N.…`) or the current iteration (`$item.…`). When set, the
+    /// step runs once per matched node; results are returned in
+    /// `items` instead of `result`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub for_each: Option<String>,
+    /// When true, an error inside this step (or any of its `for_each`
+    /// items) does not abort the pipe; the step's `error` / per-item
+    /// `error` is recorded and the next step proceeds. Subsequent
+    /// `$ref` substitutions against a step that errored fail.
+    #[serde(default)]
+    pub continue_on_error: bool,
+    /// Concurrency cap for `for_each`. Defaults to 8. Ignored when
+    /// `for_each` is unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipeResult {
+    pub steps: Vec<PipeStepResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PipeStepResult {
+    /// Echoes the step's method for correlation.
+    pub method: String,
+    /// Set for plain (non-`for_each`) steps that succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    /// Set when the step itself failed (substitution error, dispatch
+    /// error on a non-`for_each` step, or `for_each` resolution error).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<RpcError>,
+    /// Set for `for_each` steps. One entry per fan-out element, in
+    /// input order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<PipeItemResult>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipeItemResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<RpcError>,
 }
