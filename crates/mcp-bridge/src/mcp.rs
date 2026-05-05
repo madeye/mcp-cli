@@ -138,6 +138,7 @@ async fn tools_call(client: &DaemonClient, params: Value) -> Result<Value> {
         "tool_kill" => protocol::methods::TOOL_KILL,
         "metrics_gain" => protocol::methods::METRICS_GAIN,
         "metrics_tool_latency" => protocol::methods::METRICS_TOOL_LATENCY,
+        "pipe" => protocol::methods::PIPE,
         other => return Err(anyhow::anyhow!("unknown tool: {other}")),
     };
 
@@ -532,6 +533,31 @@ fn tool_definitions() -> Value {
             "name": "metrics_tool_latency",
             "description": "Per-tool daemon-side wall-clock counters (calls, sum / mean / max in microseconds) across every RPC dispatched this session. Paired with `metrics_gain` so agents and the M5 benchmark can check that fork/exec saved actually translates to wall-clock saved per call.",
             "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "pipe",
+            "description": "Compose multiple daemon RPCs into one MCP round-trip with reference forwarding. Each step's `params` may contain `{\"$ref\": \"$N.<jsonpath>\"}` substitutions referencing prior step results, and a step may set `for_each: \"$N.<jsonpath>\"` to run once per matched node with `$item` bound (use `{\"$ref\": \"$item.path\"}` etc. inside `params`). Plain `$ref` requires exactly one node; multi-cardinality lookups belong in `for_each`. JSONPath dialect is RFC 9535. Steps execute sequentially; `for_each` items run with bounded concurrency (default 8). Per-step `continue_on_error: true` keeps later steps running after a failure (subsequent `$N` refs against the failed step still error). Nested pipes are rejected — flatten composition at the caller. Use this when the agent already knows the call shape: e.g. fs_scan → fs_read for_each, or search_grep → fs_read_skeleton for_each, where waiting for the model to round-trip between steps is pure overhead.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "method": {"type": "string", "description": "Daemon RPC method (e.g. 'fs.read', 'search.grep'). Nested 'pipe' is rejected."},
+                                "params": {"description": "Daemon RPC params for this method. May contain {\"$ref\": \"$N.<jsonpath>\"} or {\"$ref\": \"$item.<jsonpath>\"} substitutions."},
+                                "for_each": {"type": "string", "description": "JSONPath against a prior step result. Step runs once per matched node with $item bound."},
+                                "continue_on_error": {"type": "boolean", "default": false, "description": "Keep later steps running if this one fails."},
+                                "concurrency": {"type": "integer", "minimum": 1, "default": 8, "description": "Concurrency cap for for_each fan-out. Clamped to 64."}
+                            },
+                            "required": ["method"]
+                        }
+                    }
+                },
+                "required": ["steps"]
+            }
         }
     ])
 }

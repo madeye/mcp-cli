@@ -1,3 +1,7 @@
+// `mcp::tool_definitions` builds a single big `json!([…])` tree that
+// pushes past the default macro recursion limit once we hit ~30 tools.
+#![recursion_limit = "512"]
+
 mod daemon_client;
 mod mcp;
 mod spawn;
