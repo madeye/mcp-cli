@@ -30,7 +30,7 @@ use protocol::{
 use crate::compact;
 use crate::languages::Language;
 use crate::search_cache::SearchKey;
-use crate::server::{resolve_within, BackgroundJob, Daemon};
+use crate::server::{BackgroundJob, Daemon};
 
 /// How many directory rows we keep per status class in compact mode
 /// before collapsing the rest into a synthetic `(other)` row. Picked
@@ -97,7 +97,7 @@ pub fn fs_read_batch(
 /// params (no JSON round-trip per batch item) and returns the
 /// structured result; callers JSON-encode at their own layer.
 fn fs_read_inner(daemon: &Daemon, params: &FsReadParams) -> Result<FsReadResult, RpcError> {
-    let path = resolve_within(&daemon.root, &params.path)?;
+    let path = daemon.resolve_path(&params.path)?;
 
     let file = File::open(&path).map_err(|e| RpcError::new(-32010, format!("open: {e}")))?;
     let metadata = file
@@ -216,7 +216,7 @@ pub fn fs_apply_patch(
 ) -> Result<serde_json::Value, RpcError> {
     let params: FsApplyPatchParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
-    let path = resolve_within(&daemon.root, &params.path)?;
+    let path = daemon.resolve_path(&params.path)?;
     check_write_preconditions(
         daemon,
         &path,
@@ -249,7 +249,7 @@ pub fn fs_replace_all(
     if params.search.is_empty() {
         return Err(RpcError::new(-32602, "search must not be empty"));
     }
-    let path = resolve_within(&daemon.root, &params.path)?;
+    let path = daemon.resolve_path(&params.path)?;
     check_write_preconditions(
         daemon,
         &path,
@@ -341,10 +341,25 @@ fn apply_unified_patch(original: &str, patch: &str) -> Result<String, RpcError> 
     let mut output = String::with_capacity(original.len() + patch.len());
     let mut original_idx = 0usize;
     let mut patch_idx = 0usize;
+    let mut hunk_index = 0usize;
     let mut saw_hunk = false;
 
     while patch_idx < patch_lines.len() {
         let line = patch_lines[patch_idx];
+        // A line that opens with "@@" but isn't a valid "@@ -A,B +C,D @@" header
+        // is almost always a caller bug (e.g. line numbers stripped). Surface it
+        // explicitly instead of silently treating it as noise and later failing
+        // with the misleading "patch contains no hunks".
+        if line.starts_with("@@") && !line.starts_with("@@ ") {
+            return Err(RpcError::new(
+                -32084,
+                format!(
+                    "malformed hunk header at patch line {}: expected `@@ -A,B +C,D @@`, got {:?}",
+                    patch_idx + 1,
+                    line.trim_end_matches('\n'),
+                ),
+            ));
+        }
         if !line.starts_with("@@ ") {
             patch_idx += 1;
             continue;
@@ -353,7 +368,15 @@ fn apply_unified_patch(original: &str, patch: &str) -> Result<String, RpcError> 
         let (old_start, _) = parse_hunk_header(line)?;
         let hunk_start = old_start.saturating_sub(1);
         if hunk_start < original_idx || hunk_start > original_lines.len() {
-            return Err(RpcError::new(-32084, "patch hunk starts outside file"));
+            return Err(RpcError::new(
+                -32084,
+                format!(
+                    "hunk #{} starts outside file: header points at line {} but cursor is at line {}",
+                    hunk_index + 1,
+                    old_start,
+                    original_idx + 1,
+                ),
+            ));
         }
         for line in &original_lines[original_idx..hunk_start] {
             output.push_str(line);
@@ -361,6 +384,7 @@ fn apply_unified_patch(original: &str, patch: &str) -> Result<String, RpcError> 
         original_idx = hunk_start;
         patch_idx += 1;
 
+        let mut hunk_body_offset = 0usize;
         while patch_idx < patch_lines.len() && !patch_lines[patch_idx].starts_with("@@ ") {
             let hunk_line = patch_lines[patch_idx];
             if hunk_line.starts_with("--- ") || hunk_line.starts_with("+++ ") {
@@ -374,28 +398,76 @@ fn apply_unified_patch(original: &str, patch: &str) -> Result<String, RpcError> 
             match tag {
                 " " => {
                     let current = original_lines.get(original_idx).ok_or_else(|| {
-                        RpcError::new(-32084, "patch context extends beyond file")
+                        RpcError::new(
+                            -32084,
+                            format!(
+                                "hunk #{} context extends beyond file at body line {} (file line {})",
+                                hunk_index + 1,
+                                hunk_body_offset + 1,
+                                original_idx + 1,
+                            ),
+                        )
                     })?;
                     if *current != content {
-                        return Err(RpcError::new(-32084, "patch context mismatch"));
+                        return Err(RpcError::new(
+                            -32084,
+                            format!(
+                                "hunk #{} context mismatch at body line {} (file line {}):\n  expected: {:?}\n  actual:   {:?}",
+                                hunk_index + 1,
+                                hunk_body_offset + 1,
+                                original_idx + 1,
+                                content.trim_end_matches('\n'),
+                                current.trim_end_matches('\n'),
+                            ),
+                        ));
                     }
                     output.push_str(current);
                     original_idx += 1;
                 }
                 "-" => {
                     let current = original_lines.get(original_idx).ok_or_else(|| {
-                        RpcError::new(-32084, "patch removal extends beyond file")
+                        RpcError::new(
+                            -32084,
+                            format!(
+                                "hunk #{} removal extends beyond file at body line {} (file line {})",
+                                hunk_index + 1,
+                                hunk_body_offset + 1,
+                                original_idx + 1,
+                            ),
+                        )
                     })?;
                     if *current != content {
-                        return Err(RpcError::new(-32084, "patch removal mismatch"));
+                        return Err(RpcError::new(
+                            -32084,
+                            format!(
+                                "hunk #{} removal mismatch at body line {} (file line {}):\n  expected: {:?}\n  actual:   {:?}",
+                                hunk_index + 1,
+                                hunk_body_offset + 1,
+                                original_idx + 1,
+                                content.trim_end_matches('\n'),
+                                current.trim_end_matches('\n'),
+                            ),
+                        ));
                     }
                     original_idx += 1;
                 }
                 "+" => output.push_str(content),
-                _ => return Err(RpcError::new(-32084, "invalid patch hunk line")),
+                _ => {
+                    return Err(RpcError::new(
+                        -32084,
+                        format!(
+                            "hunk #{} invalid line at body line {}: {:?}",
+                            hunk_index + 1,
+                            hunk_body_offset + 1,
+                            hunk_line.trim_end_matches('\n'),
+                        ),
+                    ))
+                }
             }
+            hunk_body_offset += 1;
             patch_idx += 1;
         }
+        hunk_index += 1;
     }
 
     if !saw_hunk {
@@ -430,7 +502,7 @@ pub fn fs_scan(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json:
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
 
     let scan_root = match &params.path {
-        Some(p) => resolve_within(&daemon.root, p)?,
+        Some(p) => daemon.resolve_path(p)?,
         None => daemon.root.clone(),
     };
 
@@ -487,7 +559,7 @@ pub fn git_status(
     let params: GitStatusParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let repo_root = match params.repo {
-        Some(r) => resolve_within(&daemon.root, &r)?,
+        Some(r) => daemon.resolve_path(&r)?,
         None => daemon.root.clone(),
     };
 
@@ -550,7 +622,7 @@ pub fn git_log(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json:
     let params: GitLogParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let repo_root = match params.repo {
-        Some(r) => resolve_within(&daemon.root, &r)?,
+        Some(r) => daemon.resolve_path(&r)?,
         None => daemon.root.clone(),
     };
 
@@ -661,7 +733,7 @@ pub fn git_diff(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json
     let params: GitDiffParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let repo_root = match params.repo {
-        Some(r) => resolve_within(&daemon.root, &r)?,
+        Some(r) => daemon.resolve_path(&r)?,
         None => daemon.root.clone(),
     };
 
@@ -731,13 +803,13 @@ pub fn git_blame(
     let params: GitBlameParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
     let repo_root = match params.repo {
-        Some(r) => resolve_within(&daemon.root, &r)?,
+        Some(r) => daemon.resolve_path(&r)?,
         None => daemon.root.clone(),
     };
     let repo = git2::Repository::discover(&repo_root)
         .map_err(|e| RpcError::new(-32020, format!("discover repo: {e}")))?;
     let workdir = repo.workdir().unwrap_or(&repo_root);
-    let abs_path = resolve_within(&daemon.root, &params.path)?;
+    let abs_path = daemon.resolve_path(&params.path)?;
     let repo_path = abs_path
         .strip_prefix(workdir)
         .map_err(|_| RpcError::new(-32049, "path is outside repository workdir"))?;
@@ -869,7 +941,7 @@ pub fn search_grep(
         .map_err(|e| RpcError::new(-32602, format!("invalid params: {e}")))?;
 
     let search_root = match &params.path {
-        Some(p) => resolve_within(&daemon.root, p)?,
+        Some(p) => daemon.resolve_path(p)?,
         None => daemon.root.clone(),
     };
 
@@ -877,6 +949,7 @@ pub fn search_grep(
     // time. Any file change landing after this will bump the version and
     // invalidate the entry on next access.
     let (version, _) = daemon.changelog.snapshot();
+    let cacheable = search_root.starts_with(&daemon.root);
     let context_lines = params.context.min(SEARCH_CONTEXT_CAP);
     let cache_key = SearchKey {
         pattern: params.pattern.clone(),
@@ -886,9 +959,11 @@ pub fn search_grep(
         case_insensitive: params.case_insensitive,
         context: context_lines,
     };
-    if let Some(cached) = daemon.search_cache.get(version, &cache_key) {
-        // Cache stores the raw form; compact on the way out if asked.
-        return Ok(finalize_search(daemon, cached, params.compact));
+    if cacheable {
+        if let Some(cached) = daemon.search_cache.get(version, &cache_key) {
+            // Cache stores the raw form; compact on the way out if asked.
+            return Ok(finalize_search(daemon, cached, params.compact));
+        }
     }
 
     let matcher = RegexMatcherBuilder::new()
@@ -951,7 +1026,9 @@ pub fn search_grep(
         truncated,
         compact: None,
     };
-    daemon.search_cache.insert(version, cache_key, raw.clone());
+    if cacheable {
+        daemon.search_cache.insert(version, cache_key, raw.clone());
+    }
     Ok(finalize_search(daemon, raw, params.compact))
 }
 
@@ -1023,7 +1100,7 @@ fn code_outline_inner(
     daemon: &Daemon,
     params: &CodeOutlineParams,
 ) -> Result<CodeOutlineResult, RpcError> {
-    let path = resolve_within(&daemon.root, &params.path)?;
+    let path = daemon.resolve_path(&params.path)?;
     let (language, entries) = match daemon.backends.outline(&path, params.signatures_only)? {
         Some(r) => (Some(r.language.name().to_string()), r.entries),
         None => (None, Vec::new()),
@@ -1076,7 +1153,7 @@ fn code_symbols_inner(
     daemon: &Daemon,
     params: &CodeSymbolsParams,
 ) -> Result<CodeSymbolsResult, RpcError> {
-    let path = resolve_within(&daemon.root, &params.path)?;
+    let path = daemon.resolve_path(&params.path)?;
     let (language, names) = match daemon.backends.symbols(&path)? {
         Some(r) => (Some(r.language.name().to_string()), r.names),
         None => (None, Vec::new()),
@@ -1099,13 +1176,21 @@ pub fn code_imports(
 }
 
 fn code_imports_inner(daemon: &Daemon, path: &str) -> Result<CodeImportsResult, RpcError> {
-    let abs = resolve_within(&daemon.root, path)?;
+    let abs = daemon.resolve_path(path)?;
     let language = Language::detect(&abs);
     let content =
         fs::read_to_string(&abs).map_err(|e| RpcError::new(-32080, format!("read: {e}")))?;
     let base_dir = abs.parent().unwrap_or(&daemon.root);
     let imports = language
-        .map(|lang| extract_imports(lang, &content, base_dir, &daemon.root))
+        .map(|lang| {
+            extract_imports(
+                lang,
+                &content,
+                base_dir,
+                &daemon.root,
+                daemon.unrestricted_fs,
+            )
+        })
         .unwrap_or_default();
     Ok(CodeImportsResult {
         path: path.to_string(),
@@ -1119,8 +1204,19 @@ fn extract_imports(
     content: &str,
     base_dir: &Path,
     root: &Path,
+    allow_absolute: bool,
 ) -> Vec<ImportEntry> {
     let mut imports = Vec::new();
+    let mut add_import = |module: &str, line| {
+        imports.push(import_entry(
+            module,
+            line,
+            base_dir,
+            root,
+            lang,
+            allow_absolute,
+        ));
+    };
     let mut go_block = false;
     for (idx, raw_line) in content.lines().enumerate() {
         let line_no = idx as u32 + 1;
@@ -1135,22 +1231,22 @@ fn extract_imports(
                             .and_then(|s| s.trim_end_matches(';').split_whitespace().next())
                     })
                 {
-                    imports.push(import_entry(module, line_no, base_dir, root, lang));
+                    add_import(module, line_no);
                 } else if let Some(module) = line
                     .strip_prefix("mod ")
                     .and_then(|s| s.trim_end_matches(';').split_whitespace().next())
                 {
-                    imports.push(import_entry(module, line_no, base_dir, root, lang));
+                    add_import(module, line_no);
                 }
             }
             Language::Python => {
                 if let Some(rest) = line.strip_prefix("import ") {
                     for module in rest.split(',').filter_map(|s| s.split_whitespace().next()) {
-                        imports.push(import_entry(module, line_no, base_dir, root, lang));
+                        add_import(module, line_no);
                     }
                 } else if let Some(rest) = line.strip_prefix("from ") {
                     if let Some(module) = rest.split_whitespace().next() {
-                        imports.push(import_entry(module, line_no, base_dir, root, lang));
+                        add_import(module, line_no);
                     }
                 }
             }
@@ -1160,7 +1256,7 @@ fn extract_imports(
                         || line.starts_with("export ")
                         || line.contains(" require(")
                     {
-                        imports.push(import_entry(&module, line_no, base_dir, root, lang));
+                        add_import(&module, line_no);
                     }
                 }
             }
@@ -1175,13 +1271,13 @@ fn extract_imports(
                 }
                 if let Some(module) = quoted_module(line.strip_prefix("import ").unwrap_or(line)) {
                     if go_block || line.starts_with("import ") {
-                        imports.push(import_entry(&module, line_no, base_dir, root, lang));
+                        add_import(&module, line_no);
                     }
                 }
             }
             Language::C | Language::Cpp => {
                 if let Some(module) = line.strip_prefix("#include").and_then(quoted_module) {
-                    imports.push(import_entry(&module, line_no, base_dir, root, lang));
+                    add_import(&module, line_no);
                 }
             }
         }
@@ -1203,10 +1299,11 @@ fn import_entry(
     base_dir: &Path,
     root: &Path,
     lang: Language,
+    allow_absolute: bool,
 ) -> ImportEntry {
     ImportEntry {
         module: module.to_string(),
-        resolved_path: resolve_import_path(module, base_dir, root, lang),
+        resolved_path: resolve_import_path(module, base_dir, root, lang, allow_absolute),
         line,
     }
 }
@@ -1216,6 +1313,7 @@ fn resolve_import_path(
     base_dir: &Path,
     root: &Path,
     lang: Language,
+    allow_absolute: bool,
 ) -> Option<String> {
     let candidates: Vec<PathBuf> = match lang {
         Language::TypeScript | Language::Tsx if module.starts_with('.') => {
@@ -1249,10 +1347,10 @@ fn resolve_import_path(
         .into_iter()
         .find(|p| p.exists())
         .and_then(|p| p.canonicalize().ok())
-        .and_then(|p| {
-            p.strip_prefix(root)
-                .ok()
-                .map(|r| r.to_string_lossy().to_string())
+        .and_then(|p| match p.strip_prefix(root) {
+            Ok(rel) => Some(rel.to_string_lossy().to_string()),
+            Err(_) if allow_absolute => Some(p.to_string_lossy().to_string()),
+            Err(_) => None,
         })
 }
 
@@ -1316,7 +1414,7 @@ pub fn code_find_occurrences(
     let mut occurrences = Vec::new();
     let mut truncated = false;
     for rel in files {
-        let abs = resolve_within(&daemon.root, &rel)?;
+        let abs = daemon.resolve_path(&rel)?;
         let Some(parsed) = daemon
             .parse_cache
             .get_or_parse(&abs)
@@ -1396,7 +1494,7 @@ pub fn fs_read_skeleton(
             signatures_only: true,
         },
     )?;
-    let abs = resolve_within(&daemon.root, &params.path)?;
+    let abs = daemon.resolve_path(&params.path)?;
     let content =
         fs::read_to_string(&abs).map_err(|e| RpcError::new(-32080, format!("read: {e}")))?;
     let mut lines: Vec<String> = content.lines().map(|l| format!("{l}\n")).collect();
@@ -1486,7 +1584,7 @@ pub fn tool_run(daemon: &Daemon, params: serde_json::Value) -> Result<serde_json
 
 fn tool_run_inner(daemon: &Daemon, params: &ToolRunParams) -> Result<ToolRunResult, RpcError> {
     let cwd = match &params.cwd {
-        Some(cwd) => resolve_within(&daemon.root, cwd)?,
+        Some(cwd) => daemon.resolve_path(cwd)?,
         None => daemon.root.clone(),
     };
     let cwd_display = cwd
@@ -1660,7 +1758,7 @@ pub fn tool_spawn(
         return Err(RpcError::new(-32602, "command must not be empty"));
     }
     let cwd = match &params.cwd {
-        Some(cwd) => resolve_within(&daemon.root, cwd)?,
+        Some(cwd) => daemon.resolve_path(cwd)?,
         None => daemon.root.clone(),
     };
     let mut child = Command::new(&params.command)
@@ -1968,6 +2066,7 @@ mod tests {
         let parse_cache = std::sync::Arc::new(crate::parse_cache::ParseCache::new(10));
         Daemon {
             root: root.canonicalize().unwrap(),
+            unrestricted_fs: false,
             changelog: std::sync::Arc::new(crate::changelog::ChangeLog::with_capacity(10)),
             search_cache: std::sync::Arc::new(crate::search_cache::SearchCache::new(10)),
             tool_run_cache: std::sync::Arc::new(parking_lot::Mutex::new(
@@ -1989,6 +2088,45 @@ mod tests {
                 jobs: parking_lot::Mutex::new(std::collections::HashMap::new()),
             }),
         }
+    }
+
+    fn test_unrestricted_daemon(root: &std::path::Path) -> Daemon {
+        Daemon {
+            unrestricted_fs: true,
+            ..test_daemon(root)
+        }
+    }
+
+    #[test]
+    fn test_unrestricted_search_grep_outside_root_is_not_cached() {
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let outside_file = outside.path().join("a.txt");
+        fs::write(&outside_file, "old\n").unwrap();
+        let daemon = test_unrestricted_daemon(root.path());
+
+        let first = search_grep(
+            &daemon,
+            serde_json::json!({
+                "pattern": "old|new",
+                "path": outside.path().to_str().unwrap()
+            }),
+        )
+        .unwrap();
+        let first: SearchGrepResult = serde_json::from_value(first).unwrap();
+        assert_eq!(first.hits[0].line, "old");
+
+        fs::write(&outside_file, "new\n").unwrap();
+        let second = search_grep(
+            &daemon,
+            serde_json::json!({
+                "pattern": "old|new",
+                "path": outside.path().to_str().unwrap()
+            }),
+        )
+        .unwrap();
+        let second: SearchGrepResult = serde_json::from_value(second).unwrap();
+        assert_eq!(second.hits[0].line, "new");
     }
 
     #[test]
@@ -2245,9 +2383,71 @@ mod tests {
         .expect_err("mismatched patch should fail");
 
         assert_eq!(err.code, -32084);
+        assert!(
+            err.message.contains("hunk #1")
+                && err.message.contains("expected:")
+                && err.message.contains("actual:"),
+            "expected diagnostic with hunk index and expected/actual, got {:?}",
+            err.message
+        );
         assert_eq!(
             fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
             "one\ntwo\nthree\n"
+        );
+    }
+
+    #[test]
+    fn test_fs_apply_patch_rejects_malformed_hunk_header() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let daemon = test_daemon(tmp.path());
+        let patch = "@@\n-two\n+TWO\n";
+
+        let err = fs_apply_patch(
+            &daemon,
+            serde_json::json!({"path": "a.txt", "patch": patch}),
+        )
+        .expect_err("malformed hunk header should fail");
+
+        assert_eq!(err.code, -32084);
+        assert!(
+            err.message.contains("malformed hunk header"),
+            "expected malformed-header diagnostic, got {:?}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_fs_apply_patch_already_applied_reports_context_mismatch_with_diff() {
+        // Repro of the user-reported flow: applying the same patch twice. The
+        // second call must surface enough context to make the cause obvious.
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let daemon = test_daemon(tmp.path());
+        let patch = "\
+@@ -1,3 +1,3 @@
+ one
+-two
++TWO
+ three
+";
+        fs_apply_patch(
+            &daemon,
+            serde_json::json!({"path": "a.txt", "patch": patch}),
+        )
+        .expect("first apply should succeed");
+
+        let err = fs_apply_patch(
+            &daemon,
+            serde_json::json!({"path": "a.txt", "patch": patch}),
+        )
+        .expect_err("second apply should fail");
+
+        assert_eq!(err.code, -32084);
+        assert!(
+            err.message.contains("\"two\"") && err.message.contains("\"TWO\""),
+            "expected diagnostic to include both expected and actual line content, got {:?}",
+            err.message
         );
     }
 
@@ -2275,6 +2475,34 @@ mod tests {
         assert_eq!(
             imports.imports[0].resolved_path.as_deref(),
             Some("src/auth.ts")
+        );
+    }
+
+    #[test]
+    fn test_code_imports_resolves_unrestricted_path_outside_root() {
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("auth.ts"), "export const token = 1;\n").unwrap();
+        fs::write(
+            outside.path().join("app.ts"),
+            "import { token } from './auth';\nconsole.log(token);\n",
+        )
+        .unwrap();
+        let daemon = test_unrestricted_daemon(root.path());
+
+        let result = code_imports(
+            &daemon,
+            serde_json::json!({"path": outside.path().join("app.ts").to_str().unwrap()}),
+        )
+        .unwrap();
+        let imports: CodeImportsResult = serde_json::from_value(result).unwrap();
+
+        let auth = outside.path().join("auth.ts").canonicalize().unwrap();
+        assert_eq!(imports.imports.len(), 1);
+        assert_eq!(imports.imports[0].module, "./auth");
+        assert_eq!(
+            imports.imports[0].resolved_path.as_deref(),
+            Some(auth.to_str().unwrap())
         );
     }
 
